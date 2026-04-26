@@ -318,6 +318,139 @@ gnome-extensions enable codeburn@codeburn.dev
 
 See [gnome/README.md](gnome/README.md) for settings and development notes. On Windows, `codeburn web` is the always-on view for now.
 
+## OpenTelemetry monitoring
+
+Track AI coding spend across your organization by exporting metrics via OpenTelemetry. CodeBurn pushes usage data to any OTLP-compatible backend (Prometheus, Grafana, AWS CloudWatch, etc.) so teams can build dashboards, set alerts, and monitor trends without scraping individual machines.
+
+Config is stored at `~/.config/codeburn/config.json` under the `otel` key.
+
+### Quick start (standard OTLP)
+
+```json
+{
+  "otel": {
+    "enabled": true,
+    "endpoint": "http://localhost:4318/v1/metrics",
+    "resourceAttributes": {
+      "department": "engineering",
+      "team.id": "platform"
+    }
+  }
+}
+```
+
+### AWS CloudWatch with SigV4
+
+For AWS environments, CodeBurn signs requests with SigV4 using your local AWS credentials (lazy-loads the AWS SDK at runtime):
+
+```json
+{
+  "otel": {
+    "enabled": true,
+    "endpoint": "https://monitoring.us-west-2.amazonaws.com/v1/metrics",
+    "sigv4": {
+      "region": "us-west-2",
+      "service": "monitoring"
+    },
+    "resourceAttributes": {
+      "department": "engineering"
+    }
+  }
+}
+```
+
+An optional `"profile"` field inside `sigv4` selects a named AWS credentials profile.
+
+### Static headers
+
+For endpoints that require a fixed bearer token or API key:
+
+```json
+{
+  "otel": {
+    "enabled": true,
+    "endpoint": "https://otel.internal.corp/v1/metrics",
+    "headers": {
+      "Authorization": "Bearer your-token"
+    }
+  }
+}
+```
+
+### Dynamic headers helper
+
+For enterprise auth systems that rotate tokens, point `headersHelper` at an executable that prints JSON headers to stdout:
+
+```json
+{
+  "otel": {
+    "enabled": true,
+    "endpoint": "https://otel.internal.corp/v1/metrics",
+    "headersHelper": "/usr/local/bin/get-otel-headers"
+  }
+}
+```
+
+The helper is invoked before each export. It must output valid JSON, e.g. `{"Authorization": "Bearer <token>"}`.
+
+### CLI commands
+
+```bash
+codeburn otel                   # show current OTEL config
+codeburn otel set --endpoint http://localhost:4318/v1/metrics  # set endpoint (auto-enables)
+codeburn otel set --header "Authorization=Bearer your-token"  # add static header
+codeburn otel set --resource-attr department=engineering        # add resource attribute
+codeburn otel set --sigv4-region us-west-2 --sigv4-service monitoring  # enable SigV4
+codeburn otel set --headers-helper /path/to/helper             # set headers helper
+codeburn otel set --disable     # disable without removing config
+codeburn otel test              # send a test metric payload and report success/failure
+codeburn otel reset             # remove all OTEL config
+```
+
+The `set` subcommand merges with existing config — resource attributes accumulate across calls.
+
+### Available metrics
+
+| Metric | Type | Attributes | Description |
+|--------|------|------------|-------------|
+| `codeburn.cost.usage` | Sum (cumulative) | `model` or `provider` | Estimated API cost in USD, per model and total |
+| `codeburn.token.usage` | Sum (cumulative) | `type` (input, output, cache_read, cache_write) | Token consumption broken down by direction and caching |
+| `codeburn.session.count` | Sum (cumulative) | — | Number of AI coding sessions started |
+| `codeburn.api_call.count` | Sum (cumulative) | — | Total API calls across all providers |
+| `codeburn.activity.turns` | Sum (cumulative) | `category` | User turns classified by task type (Coding, Debugging, etc.) |
+| `codeburn.cache_hit.percent` | Gauge | — | Percentage of input tokens served from prompt cache |
+| `codeburn.oneshot.rate` | Gauge | `activity` | Fraction of edit turns that succeeded without retries |
+| `codeburn.health.score` | Gauge | `grade` (A, B, C, D, F) | Setup health score (0–100) based on waste findings |
+| `codeburn.health.penalty` | Gauge | `domain` (context_bloat, read_waste, cache_waste, config_waste) | Health penalty points by waste domain |
+| `codeburn.optimize.findings` | Sum (cumulative) | `impact` (high, medium, low) | Number of waste findings by severity |
+| `codeburn.optimize.savings_tokens` | Sum (cumulative) | — | Estimated tokens saveable by fixing waste findings |
+
+All metrics include any `resourceAttributes` from your config (e.g. `department`, `team.id`).
+
+### Menubar integration
+
+When OTEL is enabled, the macOS menubar app emits metrics automatically on each refresh cycle (every 30 seconds). Developers don't need to run any extra commands — install the menubar widget and metrics flow to your backend zero-touch. For non-menubar users, add `--emit-otel` to `codeburn report --format json` or `codeburn status` to push a today-scoped snapshot after the command runs.
+
+### Example PromQL queries
+
+Total cost by model:
+
+```promql
+sum by (model) (codeburn_cost_usage)
+```
+
+Health grade distribution:
+
+```promql
+count by (grade) (codeburn_health_score)
+```
+
+Cache hit rate:
+
+```promql
+avg(codeburn_cache_hit_percent)
+```
+
 ## CodeBurn in your agent (MCP)
 
 ```bash

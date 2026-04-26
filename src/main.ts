@@ -26,7 +26,9 @@ import { ShareController } from './sharing/share-controller.js'
 import { getSharingDir, loadRemotes, saveRemotes } from './sharing/store.js'
 import type { UsageQuery } from './sharing/share-server.js'
 import { formatDateRangeLabel, parseDateRangeFlags, parseDayFlag, parseDaysFlag, getDateRange, toPeriod, type Period } from './cli-date.js'
-import { runOptimize } from './optimize.js'
+import { runOptimize, scanAndDetect } from './optimize.js'
+import type { PeriodData } from './menubar-json.js'
+import { emitOtelMetrics } from './otel.js'
 import { registerActCommands } from './act/cli.js'
 import { registerGuardCommands } from './guard/cli.js'
 import { registerSyncCommands } from './sync/cli.js'
@@ -38,7 +40,7 @@ import {
   runAgyStatusLineHook,
   uninstallAntigravityStatusLineHook,
 } from './antigravity-statusline.js'
-import { clearPlan, readConfig, readPlan, readPlans, saveConfig, savePlan, getConfigFilePath, type CodeburnConfig, type Plan, type PlanId, type PlanProvider } from './config.js'
+import { clearPlan, readConfig, readOtelConfig, readPlan, readPlans, saveConfig, savePlan, getConfigFilePath, type CodeburnConfig, type OtelConfig, type Plan, type PlanId, type PlanProvider } from './config.js'
 import { clampResetDay, getPlanUsageOrNull, getPlanUsages, type PlanUsage } from './plan-usage.js'
 import { getPresetPlan, isPlanId, isPlanProvider, PLAN_IDS, PLAN_PROVIDERS, planDisplayName } from './plans.js'
 import { createRequire } from 'node:module'
@@ -418,6 +420,26 @@ async function runJsonReport(period: Period, provider: string, project: string[]
   console.log(JSON.stringify(report, null, 2))
 }
 
+/// Fire-and-forget OpenTelemetry metrics emission for a today-scoped snapshot.
+/// Recomputes today's durable totals (and, when requested, optimize findings) —
+/// both the session parse and the optimize scan are cached, so this is cheap
+/// right after a menubar/report render that already parsed today. A no-op unless
+/// OTEL is enabled in config; errors are swallowed so telemetry never blocks or
+/// fails the CLI. Callers do not await it: the pending export keeps the event
+/// loop alive until it flushes, so the JSON output is never delayed.
+async function emitOtelSnapshot(
+  provider: string,
+  project: string[],
+  exclude: string[],
+  withOptimize: boolean,
+): Promise<void> {
+  const otelConfig = await readOtelConfig()
+  if (!otelConfig) return
+  const durable = await buildDurablePeriod(getDateRange('today'), { provider, project, exclude })
+  const optimize = withOptimize ? await scanAndDetect(durable.liveProjects, durable.scanRange) : null
+  await emitOtelMetrics(otelConfig, durable.data, optimize, durable.liveProjects)
+}
+
 const program = new Command()
   .name('codeburn')
   .description('See where your AI coding tokens go - by task, tool, model, and project')
@@ -747,6 +769,7 @@ program
   .option('--project <name>', 'Show only projects matching name (repeatable)', collect, [])
   .option('--exclude <name>', 'Exclude projects matching name (repeatable)', collect, [])
   .option('--refresh <seconds>', 'Auto-refresh interval in seconds (0 to disable)', parseInteger, 30)
+  .option('--emit-otel', 'Emit OpenTelemetry metrics after JSON output (requires --format json)')
   .action(async (opts) => {
     assertFormat(opts.format, ['tui', 'json'], 'report')
     assertProvider(opts.provider, 'report')
@@ -775,6 +798,11 @@ program
         console.log(JSON.stringify(await attachPlanSummaries(buildJsonReport(durable.liveProjects, label, periodKey, durable)), null, 2))
       } else {
         await runJsonReport(period, opts.provider, opts.project, opts.exclude)
+      }
+      // OTEL export piggybacks on a today-scoped JSON report for non-menubar
+      // users. Fire-and-forget: never await, never let it fail the report.
+      if (opts.emitOtel && period === 'today' && !daySelection && !customRange) {
+        emitOtelSnapshot(opts.provider, opts.project, opts.exclude, false).catch(() => {})
       }
       return
     }
@@ -1048,6 +1076,7 @@ program
   .option('--days <dates>', 'Comma-separated dates (YYYY-MM-DD) for multi-day selection')
   .option('--no-optimize', 'Skip optimize findings (menubar-json only, faster)')
   .option('--no-timeline', 'Skip the granular timeline (menubar-json only, faster)')
+  .option('--emit-otel', 'Emit OpenTelemetry metrics after output')
   .addOption(new Option('--claude-config-source <id>').hideHelp())
   .action(async (opts) => {
     assertFormat(opts.format, ['terminal', 'menubar-json', 'json'], 'status')
@@ -1123,6 +1152,11 @@ program
         }
       }
       console.log(JSON.stringify(payload))
+      // Piggyback OTEL export on the menubar's ~30s today poll: fire-and-forget,
+      // only for a plain today view (no custom day/range/multi-day selection).
+      if (opts.period === 'today' && !daysSelection && !customRange && !daySelection) {
+        emitOtelSnapshot(pf, opts.project, opts.exclude, opts.optimize !== false).catch(() => {})
+      }
       return
     }
 
@@ -1158,6 +1192,12 @@ program
         }
       }
       console.log(JSON.stringify(await attachPlanSummaries(payload)))
+      if (opts.emitOtel) {
+        // Reuse today's already-parsed durable snapshot; no optimize scan on the
+        // compact JSON path (matches the original --emit-otel behavior).
+        const otelConfig = await readOtelConfig()
+        if (otelConfig) emitOtelMetrics(otelConfig, todayData, null, todayProjects).catch(() => {})
+      }
       return
     }
 
@@ -1167,6 +1207,10 @@ program
       today: { cost: todayDurable.data.cost, calls: todayDurable.data.calls },
       month: { cost: monthDurable.data.cost, calls: monthDurable.data.calls },
     }))
+    if (opts.emitOtel) {
+      const otelConfig = await readOtelConfig()
+      if (otelConfig) emitOtelMetrics(otelConfig, todayDurable.data, null, todayDurable.liveProjects).catch(() => {})
+    }
   })
 
 program
@@ -2212,6 +2256,130 @@ program
       return
     }
     process.stdout.write(renderDoctorTable(report, { color: opts.color }))
+  })
+
+const otelCmd = program
+  .command('otel [action]')
+  .description('Configure and test OpenTelemetry metrics export')
+  .action(async (action?: string) => {
+    const mode = action ?? 'show'
+
+    if (mode === 'show') {
+      const config = await readConfig()
+      const otel = config.otel
+      if (!otel) {
+        console.log('\n  OpenTelemetry: not configured.')
+        console.log(`  Config: ${getConfigFilePath()}\n`)
+        return
+      }
+      console.log(`\n  OpenTelemetry:`)
+      console.log(`    Enabled:    ${otel.enabled}`)
+      console.log(`    Endpoint:   ${otel.endpoint}`)
+      if (otel.sigv4) {
+        console.log(`    SigV4:      region=${otel.sigv4.region}, service=${otel.sigv4.service}${otel.sigv4.profile ? `, profile=${otel.sigv4.profile}` : ''}`)
+      }
+      if (otel.resourceAttributes && Object.keys(otel.resourceAttributes).length > 0) {
+        console.log(`    Resources:  ${Object.entries(otel.resourceAttributes).map(([k, v]) => `${k}=${v}`).join(', ')}`)
+      }
+      if (otel.headersHelper) {
+        console.log(`    Headers helper: ${otel.headersHelper}`)
+      }
+      if (otel.headers && Object.keys(otel.headers).length > 0) {
+        console.log(`    Headers:    ${Object.entries(otel.headers).map(([k, v]) => `${k}=${v.slice(0, 20)}${v.length > 20 ? '...' : ''}`).join(', ')}`)
+      }
+      console.log(`  Config: ${getConfigFilePath()}\n`)
+      return
+    }
+
+    if (mode === 'test') {
+      const otelConfig = await readOtelConfig()
+      if (!otelConfig) {
+        console.error('\n  OpenTelemetry is not configured or not enabled. Run `codeburn otel set --endpoint <url>` first.\n')
+        process.exitCode = 1
+        return
+      }
+      console.log('  Sending test metrics...')
+      try {
+        const testData: PeriodData = { label: 'test', cost: 0, savingsUSD: 0, calls: 0, sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, categories: [], models: [] }
+        await emitOtelMetrics(otelConfig, testData, null, [])
+        console.log('\n  Test metrics sent successfully.\n')
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`\n  Test failed: ${message}\n`)
+        process.exitCode = 1
+      }
+      return
+    }
+
+    if (mode === 'reset') {
+      const config = await readConfig()
+      delete config.otel
+      await saveConfig(config)
+      console.log('\n  OpenTelemetry config removed.\n')
+      return
+    }
+
+    console.error(`\n  Unknown action "${mode}". Use: show, test, reset, or "otel set".\n`)
+    process.exitCode = 1
+  })
+
+otelCmd
+  .command('set')
+  .description('Set OpenTelemetry configuration options')
+  .option('--endpoint <url>', 'OTLP metrics endpoint')
+  .option('--header <kv>', 'Add static header (key=value, e.g. Authorization=Bearer token)', collect, [])
+  .option('--resource-attr <kv>', 'Add resource attribute (key=value)', collect, [])
+  .option('--headers-helper <path>', 'Path to dynamic headers script')
+  .option('--sigv4-region <region>', 'AWS region for SigV4')
+  .option('--sigv4-service <service>', 'AWS service for SigV4')
+  .option('--sigv4-profile <profile>', 'AWS profile for SigV4')
+  .option('--disable', 'Disable OTEL export')
+  .action(async (opts: { endpoint?: string; header: string[]; resourceAttr: string[]; headersHelper?: string; sigv4Region?: string; sigv4Service?: string; sigv4Profile?: string; disable?: boolean }) => {
+    const config = await readConfig()
+    const otel: OtelConfig = config.otel ?? { enabled: false, endpoint: '' }
+
+    if (opts.endpoint) {
+      otel.endpoint = opts.endpoint
+      otel.enabled = true
+    }
+    if (opts.disable) {
+      otel.enabled = false
+    }
+    if (opts.headersHelper) {
+      otel.headersHelper = opts.headersHelper
+    }
+    if (opts.header.length > 0) {
+      otel.headers = otel.headers ?? {}
+      for (const kv of opts.header) {
+        const eq = kv.indexOf('=')
+        if (eq > 0) {
+          otel.headers[kv.slice(0, eq)] = kv.slice(eq + 1)
+        }
+      }
+    }
+    if (opts.resourceAttr.length > 0) {
+      otel.resourceAttributes = otel.resourceAttributes ?? {}
+      for (const kv of opts.resourceAttr) {
+        const eq = kv.indexOf('=')
+        if (eq > 0) {
+          otel.resourceAttributes[kv.slice(0, eq)] = kv.slice(eq + 1)
+        }
+      }
+    }
+    if (opts.sigv4Region || opts.sigv4Service) {
+      otel.sigv4 = otel.sigv4 ?? { region: '', service: '' }
+      if (opts.sigv4Region) otel.sigv4.region = opts.sigv4Region
+      if (opts.sigv4Service) otel.sigv4.service = opts.sigv4Service
+    }
+    if (opts.sigv4Profile) {
+      otel.sigv4 = otel.sigv4 ?? { region: '', service: '' }
+      otel.sigv4.profile = opts.sigv4Profile
+    }
+
+    config.otel = otel
+    await saveConfig(config)
+    console.log(`\n  OpenTelemetry config updated.`)
+    console.log(`  Config saved to ${getConfigFilePath()}\n`)
   })
 
 registerActCommands(program)

@@ -19,6 +19,23 @@ export type PlanConfig = Omit<Plan, 'provider' | 'setAt'> & Partial<Pick<Plan, '
 export type PlanConfigMap = Partial<Record<PlanProvider, PlanConfig>>
 export type PlanMap = Partial<Record<PlanProvider, Plan>>
 
+export type OtelSigV4Config = {
+  profile?: string
+  region: string
+  service: string
+}
+
+export type OtelConfig = {
+  enabled: boolean
+  endpoint: string
+  protocol?: 'http/json' | 'http/protobuf'
+  headers?: Record<string, string>
+  headersHelper?: string
+  headersHelperIntervalMs?: number
+  resourceAttributes?: Record<string, string>
+  sigv4?: OtelSigV4Config
+}
+
 export type CodeburnConfig = {
   currency?: {
     code: string
@@ -61,6 +78,7 @@ export type CodeburnConfig = {
   // Matched against the canonical project path: prefix on a path-segment
   // boundary, case-insensitive, trailing-slash and backslash tolerant.
   proxyPaths?: string[]
+  otel?: OtelConfig
 }
 
 function getConfigDir(): string {
@@ -171,4 +189,9 @@ export async function clearPlan(provider?: PlanProvider): Promise<void> {
 
 export function getConfigFilePath(): string {
   return getConfigPath()
+}
+
+export async function readOtelConfig(): Promise<OtelConfig | null> {
+  const config = await readConfig()
+  return config.otel?.enabled ? config.otel : null
 }
