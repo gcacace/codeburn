@@ -425,7 +425,7 @@ When OTEL is enabled, the macOS menubar app emits metrics automatically on each 
 
 ### Cumulative metrics and time
 
-The `Sum (cumulative)` metrics report **today's running total** and are anchored to **local midnight**: every point emitted during a day carries the same `start_time` (start of the current local day, honoring `--timezone`/`CODEBURN_TZ`), and the counter resets to zero at midnight. Anchoring to a stable start time (rather than the moment of each push) means backends that convert cumulative→delta — the OpenTelemetry Collector's Prometheus exporter, Amazon Managed Prometheus, CloudWatch — see one clean per-day series instead of a start time that churns on every ~30s push.
+The `Sum (cumulative)` metrics report **today's running total** and are anchored to **local midnight**: every point emitted during a day carries the same `start_time` (start of the current local day, honoring `--timezone`/`CODEBURN_TZ`), and the counter resets to zero at midnight. Because the start time is stable across a day, backends that convert cumulative→delta — the OpenTelemetry Collector's Prometheus exporter, Amazon Managed Prometheus, CloudWatch — read each day as one clean series with a single reset at midnight.
 
 Because the value resets daily, plot these counters through Prometheus's reset-aware functions rather than as raw values (standard practice for any counter):
 

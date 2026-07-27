@@ -112,8 +112,8 @@ codeburn_cost_usage{provider="all"}          # the day's total spend, pre-comput
 ## Waste domains
 
 `codeburn.health.penalty`'s `domain` attribute groups the individual findings into a
-handful of chartable buckets. Domains are assigned from each finding's **stable id**
-(not its wording), so they are robust across UI copy changes.
+handful of chartable buckets, keyed off each finding's **stable id** so the labels
+stay consistent across releases.
 
 | `domain` | Meaning | Finding ids |
 |----------|---------|-------------|
@@ -142,10 +142,10 @@ The full set of stable finding ids that appear on the `id` attribute of
 The `Sum (cumulative)` metrics report **today's running total** and are anchored to
 **local midnight**: every point emitted during a day carries the same `start_time`
 (start of the current local day, honoring `--timezone`/`CODEBURN_TZ`), and the counter
-resets to zero at midnight. Anchoring to a stable start time (rather than the moment of
-each push) means backends that convert cumulative→delta — the OpenTelemetry Collector's
-Prometheus exporter, Amazon Managed Prometheus, CloudWatch — see one clean per-day series
-instead of a start time that churns on every push.
+resets to zero at midnight. Because the start time is stable across a day, backends that
+convert cumulative→delta — the OpenTelemetry Collector's Prometheus exporter, Amazon
+Managed Prometheus, CloudWatch — read each day as one clean series with a single reset at
+midnight.
 
 Because the value resets daily, plot these counters through reset-aware functions rather
 than as raw values (standard practice for any counter):
