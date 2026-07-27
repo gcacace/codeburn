@@ -411,44 +411,67 @@ The `set` subcommand merges with existing config — resource attributes accumul
 
 ### Available metrics
 
-| Metric | Type | Attributes | Description |
-|--------|------|------------|-------------|
-| `codeburn.cost.usage` | Sum (cumulative) | `model` or `provider` | Estimated API cost in USD, per model and total |
-| `codeburn.token.usage` | Sum (cumulative) | `type` (input, output, cache_read, cache_write) | Token consumption broken down by direction and caching |
-| `codeburn.session.count` | Sum (cumulative) | — | Number of AI coding sessions started |
-| `codeburn.api_call.count` | Sum (cumulative) | — | Total API calls across all providers |
-| `codeburn.activity.turns` | Sum (cumulative) | `category` | User turns classified by task type (Coding, Debugging, etc.) |
-| `codeburn.cache_hit.percent` | Gauge | — | Percentage of input tokens served from prompt cache |
-| `codeburn.oneshot.rate` | Gauge | `activity` | Fraction of edit turns that succeeded without retries |
-| `codeburn.health.score` | Gauge | `grade` (A, B, C, D, F) | Setup health score (0–100) based on waste findings |
-| `codeburn.health.penalty` | Gauge | `domain` (context_bloat, read_waste, cache_waste, config_waste) | Health penalty points by waste domain |
-| `codeburn.optimize.findings` | Sum (cumulative) | `impact` (high, medium, low) | Number of waste findings by severity |
-| `codeburn.optimize.savings_tokens` | Sum (cumulative) | — | Estimated tokens saveable by fixing waste findings |
+CodeBurn exports 25 instruments (11 gauges + 14 cumulative sums). **[MONITORING.md](MONITORING.md) is the full reference** — every metric name, instrument type, unit, and attribute (with the resource-vs-data-point distinction, waste-domain and finding-id tables, and example queries). At a glance:
 
-All metrics include any `resourceAttributes` from your config (e.g. `department`, `team.id`).
+- **Spend** — `codeburn.cost.usage` (by model / provider / category / total), `cost.estimated`, `cost.proxied`, `codex.credits`, `token.usage` (by direction incl. reasoning), `session.count`, `api_call.count`, `activity.turns`, `pricing.coverage`.
+- **Efficiency & waste** — `cache_hit.percent`, `oneshot.rate`, `model.oneshot_rate`, `model.cost_per_edit`, `retry.rate`, `retry_tax.usd`, `routing_waste.usd`, `routing.baseline_cost_per_edit`, `workflow.correction_rate`, `health.score`, `health.penalty`, `optimize.findings`, `optimize.savings_tokens`, `optimize.savings_usd`.
+- **Realized savings & recommendations** — `savings.local_model.usd`, `recommendation.savings_pct`.
+
+**Resource attributes.** Every metric includes the `resourceAttributes` from your config (e.g. `department`, `cost_center`, `team.id`, `user.email`, `organization`) — this is how you slice fleet-wide spend and waste by org structure. CodeBurn also auto-attaches a pseudonymous `codeburn.device_id` (a salted hash of host + username — never the raw values) and `host.name`, so you can drill down to an individual developer or machine even before an org configures `user.email`. Any config attribute overrides an auto-attached one with the same key. See [MONITORING.md](MONITORING.md#attributes-resource-vs-data-point) for the full attribute reference.
 
 ### Menubar integration
 
 When OTEL is enabled, the macOS menubar app emits metrics automatically on each refresh cycle (every 30 seconds). Developers don't need to run any extra commands — install the menubar widget and metrics flow to your backend zero-touch. For non-menubar users, add `--emit-otel` to `codeburn report --format json` or `codeburn status` to push a today-scoped snapshot after the command runs.
 
-### Example PromQL queries
+### Cumulative metrics and time
 
-Total cost by model:
+The `Sum (cumulative)` metrics report **today's running total** and are anchored to **local midnight**: every point emitted during a day carries the same `start_time` (start of the current local day, honoring `--timezone`/`CODEBURN_TZ`), and the counter resets to zero at midnight. Anchoring to a stable start time (rather than the moment of each push) means backends that convert cumulative→delta — the OpenTelemetry Collector's Prometheus exporter, Amazon Managed Prometheus, CloudWatch — see one clean per-day series instead of a start time that churns on every ~30s push.
+
+Because the value resets daily, plot these counters through Prometheus's reset-aware functions rather than as raw values (standard practice for any counter):
 
 ```promql
-sum by (model) (codeburn_cost_usage)
+# Spend rate ($/hour), reset-aware — smooth across midnight
+rate(codeburn_cost_usage{provider="all"}[1h]) * 3600
+
+# Per-day total per department — the daily peak IS that day's total
+sum by (department) (max_over_time(codeburn_cost_usage{provider="all"}[1d]))
+
+# Rolling 7-day spend, absorbing the daily resets
+increase(codeburn_cost_usage{provider="all"}[7d])
+```
+
+For a monotonically rising cumulative line, run the per-day query above and apply Grafana's **"Cumulative sum"** transform. The raw counter value (`codeburn_cost_usage{provider="all"}`) is a valid "today so far" single-stat.
+
+### Example PromQL queries
+
+Cost by department (from resource attributes):
+
+```promql
+sum by (department) (codeburn_cost_usage{provider="all"})
+```
+
+Teams with the highest retry tax (wasted spend on retried edits):
+
+```promql
+topk(5, sum by (team_id) (codeburn_retry_tax_usd{provider="all"}))
+```
+
+Biggest routing-waste opportunities by cost center:
+
+```promql
+sum by (cost_center) (codeburn_routing_waste_usd{provider="all"})
+```
+
+Cost by model (select the model breakdown only — see [MONITORING.md](MONITORING.md#the-providerall-convention)):
+
+```promql
+sum by (model) (codeburn_cost_usage{model!=""})
 ```
 
 Health grade distribution:
 
 ```promql
 count by (grade) (codeburn_health_score)
-```
-
-Cache hit rate:
-
-```promql
-avg(codeburn_cache_hit_percent)
 ```
 
 ## CodeBurn in your agent (MCP)

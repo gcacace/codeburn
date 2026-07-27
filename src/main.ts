@@ -27,8 +27,9 @@ import { getSharingDir, loadRemotes, saveRemotes } from './sharing/store.js'
 import type { UsageQuery } from './sharing/share-server.js'
 import { formatDateRangeLabel, parseDateRangeFlags, parseDayFlag, parseDaysFlag, getDateRange, toPeriod, type Period } from './cli-date.js'
 import { runOptimize, scanAndDetect } from './optimize.js'
-import type { PeriodData } from './menubar-json.js'
 import { emitOtelMetrics } from './otel.js'
+import { buildOtelSnapshot, emptyOtelSnapshot } from './otel-metrics.js'
+import type { MenubarPayload } from './menubar-json.js'
 import { registerActCommands } from './act/cli.js'
 import { registerGuardCommands } from './guard/cli.js'
 import { registerSyncCommands } from './sync/cli.js'
@@ -421,23 +422,38 @@ async function runJsonReport(period: Period, provider: string, project: string[]
 }
 
 /// Fire-and-forget OpenTelemetry metrics emission for a today-scoped snapshot.
-/// Recomputes today's durable totals (and, when requested, optimize findings) —
-/// both the session parse and the optimize scan are cached, so this is cheap
-/// right after a menubar/report render that already parsed today. A no-op unless
-/// OTEL is enabled in config; errors are swallowed so telemetry never blocks or
-/// fails the CLI. Callers do not await it: the pending export keeps the event
-/// loop alive until it flushes, so the JSON output is never delayed.
+/// Routes through the SAME rich payload builder the menubar uses
+/// (buildMenubarPayloadForRange) so every enriched instrument — real
+/// per-provider cost, per-model efficiency, retry tax, routing waste, realized
+/// local-model savings, model recommendations — has data, without re-deriving
+/// any of it here. Both the session parse and the optimize scan are cached, so
+/// this is cheap right after a menubar/report render that already parsed today.
+/// A no-op unless OTEL is enabled in config; errors are swallowed so telemetry
+/// never blocks or fails the CLI. Callers do not await it: the pending export
+/// keeps the event loop alive until it flushes, so JSON output is never delayed.
 async function emitOtelSnapshot(
   provider: string,
   project: string[],
   exclude: string[],
-  withOptimize: boolean,
+  // The menubar-json path already built the full payload for today; pass its
+  // `current` block to avoid re-running the (expensive) payload aggregation on
+  // every ~30s poll. Other callers omit it and it is rebuilt from cache.
+  prebuiltCurrent?: MenubarPayload['current'],
 ): Promise<void> {
   const otelConfig = await readOtelConfig()
   if (!otelConfig) return
-  const durable = await buildDurablePeriod(getDateRange('today'), { provider, project, exclude })
-  const optimize = withOptimize ? await scanAndDetect(durable.liveProjects, durable.scanRange) : null
-  await emitOtelMetrics(otelConfig, durable.data, optimize, durable.liveProjects)
+  const periodInfo = getDateRange('today')
+  const current = prebuiltCurrent
+    ?? (await buildMenubarPayloadForRange(periodInfo, { provider, project, exclude })).current
+  // liveProjects (for reasoning tokens + proxied cost) and the full
+  // OptimizeResult (for costRate / finding ids / recommendations) are not on
+  // the payload; both the parse and the optimize scan are cached, so these are
+  // cache hits right after the render that produced `current`.
+  const durable = await buildDurablePeriod(periodInfo, { provider, project, exclude })
+  const optimize = await scanAndDetect(durable.liveProjects, durable.scanRange)
+  const snapshot = buildOtelSnapshot(current, optimize, durable.liveProjects)
+  // Anchor cumulative metrics to the start of the SAME day the snapshot covers.
+  await emitOtelMetrics(otelConfig, snapshot, periodInfo.range.start)
 }
 
 const program = new Command()
@@ -802,7 +818,7 @@ program
       // OTEL export piggybacks on a today-scoped JSON report for non-menubar
       // users. Fire-and-forget: never await, never let it fail the report.
       if (opts.emitOtel && period === 'today' && !daySelection && !customRange) {
-        emitOtelSnapshot(opts.provider, opts.project, opts.exclude, false).catch(() => {})
+        emitOtelSnapshot(opts.provider, opts.project, opts.exclude).catch(() => {})
       }
       return
     }
@@ -1153,9 +1169,11 @@ program
       }
       console.log(JSON.stringify(payload))
       // Piggyback OTEL export on the menubar's ~30s today poll: fire-and-forget,
-      // only for a plain today view (no custom day/range/multi-day selection).
-      if (opts.period === 'today' && !daysSelection && !customRange && !daySelection) {
-        emitOtelSnapshot(pf, opts.project, opts.exclude, opts.optimize !== false).catch(() => {})
+      // only for a plain today view (no custom day/range/multi-day selection and
+      // no Claude-config scoping, so the reused payload is genuine all-scope
+      // today). Reuse the payload we just built to avoid re-aggregating.
+      if (opts.period === 'today' && !daysSelection && !customRange && !daySelection && !opts.claudeConfigSource) {
+        emitOtelSnapshot(pf, opts.project, opts.exclude, payload.current).catch(() => {})
       }
       return
     }
@@ -1192,11 +1210,9 @@ program
         }
       }
       console.log(JSON.stringify(await attachPlanSummaries(payload)))
+      // Build and emit the rich today-scoped snapshot fire-and-forget.
       if (opts.emitOtel) {
-        // Reuse today's already-parsed durable snapshot; no optimize scan on the
-        // compact JSON path (matches the original --emit-otel behavior).
-        const otelConfig = await readOtelConfig()
-        if (otelConfig) emitOtelMetrics(otelConfig, todayData, null, todayProjects).catch(() => {})
+        emitOtelSnapshot(pf, opts.project, opts.exclude).catch(() => {})
       }
       return
     }
@@ -1208,8 +1224,7 @@ program
       month: { cost: monthDurable.data.cost, calls: monthDurable.data.calls },
     }))
     if (opts.emitOtel) {
-      const otelConfig = await readOtelConfig()
-      if (otelConfig) emitOtelMetrics(otelConfig, todayDurable.data, null, todayDurable.liveProjects).catch(() => {})
+      emitOtelSnapshot(pf, opts.project, opts.exclude).catch(() => {})
     }
   })
 
@@ -2300,8 +2315,7 @@ const otelCmd = program
       }
       console.log('  Sending test metrics...')
       try {
-        const testData: PeriodData = { label: 'test', cost: 0, savingsUSD: 0, calls: 0, sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, categories: [], models: [] }
-        await emitOtelMetrics(otelConfig, testData, null, [])
+        await emitOtelMetrics(otelConfig, emptyOtelSnapshot(), getDateRange('today').range.start)
         console.log('\n  Test metrics sent successfully.\n')
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)

@@ -1,51 +1,74 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MeterProvider, AggregationTemporality } from '@opentelemetry/sdk-metrics'
-import type { PeriodData } from '../src/menubar-json.js'
-import type { OptimizeResult, WasteFinding } from '../src/optimize.js'
-import { classifyWasteDomain, recordMetrics } from '../src/otel-metrics.js'
+import type { FindingId } from '../src/optimize.js'
+import { classifyWasteDomain, recordMetrics, emptyOtelSnapshot, type OtelSnapshot } from '../src/otel-metrics.js'
 
-function makeFinding(title: string, impact: 'high' | 'medium' | 'low', tokensSaved = 1000): WasteFinding {
-  return {
-    title,
-    explanation: 'test',
-    impact,
-    tokensSaved,
-    fix: { type: 'paste', label: 'test', text: 'test' },
-  }
-}
-
-const samplePeriodData: PeriodData = {
-  label: '7 days',
+// A rich snapshot exercising every dimension the instruments emit.
+const sampleSnapshot: OtelSnapshot = {
   cost: 12.5,
+  estimatedCostUSD: 1.25,
+  proxiedCostUSD: 4,
   calls: 100,
   sessions: 5,
   inputTokens: 80000,
   outputTokens: 20000,
+  reasoningTokens: 3000,
   cacheReadTokens: 20000,
   cacheWriteTokens: 5000,
+  codexCredits: 7,
+  pricingCoverage: 0.9,
+  correctionRate: 0.25,
   categories: [
-    { name: 'Coding', cost: 8, turns: 40, editTurns: 20, oneShotTurns: 18 },
-    { name: 'Debugging', cost: 3, turns: 15, editTurns: 10, oneShotTurns: 5 },
-    { name: 'Exploration', cost: 1.5, turns: 10, editTurns: 0, oneShotTurns: 0 },
+    { name: 'Coding', cost: 8, savingsUSD: 1, turns: 40, oneShotRate: 18 / 20 },
+    { name: 'Debugging', cost: 3, savingsUSD: 0.5, turns: 15, oneShotRate: 5 / 10 },
+    { name: 'Exploration', cost: 1.5, savingsUSD: 0, turns: 10, oneShotRate: null },
   ],
   models: [
-    { name: 'claude-sonnet-4-6', cost: 10, calls: 80 },
-    { name: 'claude-haiku-3.5', cost: 2.5, calls: 20 },
+    { name: 'claude-sonnet-4-6', cost: 10, calls: 80, savingsUSD: 0, estimatedCostUSD: 1.25 },
+    { name: 'claude-haiku-3.5', cost: 2.5, calls: 20, savingsUSD: 0, estimatedCostUSD: 0 },
   ],
+  providers: [
+    { name: 'claude', cost: 11 },
+    { name: 'codex', cost: 1.5 },
+  ],
+  modelEfficiency: [
+    { name: 'claude-sonnet-4-6', costPerEdit: 0.5, oneShotRate: 0.9 },
+    { name: 'claude-haiku-3.5', costPerEdit: 0.1, oneShotRate: null },
+  ],
+  retryTax: {
+    totalUSD: 2,
+    byModel: [
+      { name: 'claude-sonnet-4-6', taxUSD: 1.5, retriesPerEdit: 0.4 },
+      { name: 'claude-haiku-3.5', taxUSD: 0.5, retriesPerEdit: null },
+    ],
+  },
+  routingWaste: {
+    totalSavingsUSD: 3,
+    baselineModel: 'claude-haiku-3.5',
+    baselineCostPerEdit: 0.1,
+    byModel: [{ name: 'claude-sonnet-4-6', savingsUSD: 3 }],
+  },
+  localModelSavings: {
+    totalUSD: 6,
+    byModel: [{ name: 'llama3.1:8b', savingsUSD: 6 }],
+    byProvider: [{ name: 'ollama', savingsUSD: 6 }],
+  },
+  optimize: {
+    healthScore: 71,
+    healthGrade: 'C',
+    costRate: 0.00001,
+    findings: [
+      { id: 'claude-md-too-long', impact: 'high', tokensSaved: 5000, trend: 'active' },
+      { id: 'redundant-rereads', impact: 'medium', tokensSaved: 3000 },
+      { id: 'bash-output-cap', impact: 'low', tokensSaved: 1000 },
+    ],
+    modelRecommendations: [
+      { fromModel: 'claude-sonnet-4-6', toModel: 'claude-haiku-3.5', savingsPct: 42 },
+    ],
+  },
 }
 
-const sampleOptimizeResult: OptimizeResult = {
-  findings: [
-    makeFinding('Your CLAUDE.md is too long', 'high', 5000),
-    makeFinding('Claude is re-reading the same files', 'medium', 3000),
-    makeFinding('Shrink bash output limit', 'low', 1000),
-  ],
-  costRate: 0.00001,
-  healthScore: 71,
-  healthGrade: 'C',
-}
-
-async function collectMetrics(periodData: PeriodData, optimizeResult: OptimizeResult | null) {
+async function collectMetrics(snapshot: OtelSnapshot) {
   const { MetricReader } = await import('@opentelemetry/sdk-metrics')
 
   // Custom reader that exposes collect() directly — avoids PeriodicExportingMetricReader
@@ -60,7 +83,7 @@ async function collectMetrics(periodData: PeriodData, optimizeResult: OptimizeRe
   const provider = new MeterProvider({ readers: [reader] })
   const meter = provider.getMeter('test')
 
-  recordMetrics(meter, periodData, optimizeResult, [])
+  recordMetrics(meter, snapshot)
 
   const { resourceMetrics } = await reader.collect()
   await provider.shutdown()
@@ -79,32 +102,46 @@ async function collectMetrics(periodData: PeriodData, optimizeResult: OptimizeRe
 }
 
 describe('classifyWasteDomain', () => {
-  it('classifies context_bloat titles', () => {
-    expect(classifyWasteDomain(makeFinding('Your CLAUDE.md is too long', 'high'))).toBe('context_bloat')
-    expect(classifyWasteDomain(makeFinding('2 MCP servers configured but never used', 'medium'))).toBe('context_bloat')
-    expect(classifyWasteDomain(makeFinding('3 custom ghost agents you never use', 'low'))).toBe('context_bloat')
-    expect(classifyWasteDomain(makeFinding('2 ghost skills you never use', 'low'))).toBe('context_bloat')
-    expect(classifyWasteDomain(makeFinding('5 ghost commands you never use', 'low'))).toBe('context_bloat')
+  const finding = (id: FindingId) => ({ id })
+
+  it('classifies context_bloat findings', () => {
+    expect(classifyWasteDomain(finding('claude-md-too-long'))).toBe('context_bloat')
+    expect(classifyWasteDomain(finding('unused-agents'))).toBe('context_bloat')
+    expect(classifyWasteDomain(finding('unused-skills'))).toBe('context_bloat')
+    expect(classifyWasteDomain(finding('unused-commands'))).toBe('context_bloat')
   })
 
-  it('classifies read_waste titles', () => {
-    expect(classifyWasteDomain(makeFinding('Claude is reading junk read folders', 'medium'))).toBe('read_waste')
-    expect(classifyWasteDomain(makeFinding('Claude is re-reading duplicate read files', 'medium'))).toBe('read_waste')
-    expect(classifyWasteDomain(makeFinding('Low read/edit ratio', 'high'))).toBe('read_waste')
-    expect(classifyWasteDomain(makeFinding('Low read-to-edit ratio', 'high'))).toBe('read_waste')
+  it('classifies read_waste findings', () => {
+    expect(classifyWasteDomain(finding('read-edit-ratio'))).toBe('read_waste')
+    expect(classifyWasteDomain(finding('build-folder-reads'))).toBe('read_waste')
+    expect(classifyWasteDomain(finding('redundant-rereads'))).toBe('read_waste')
   })
 
-  it('classifies cache_waste titles', () => {
-    expect(classifyWasteDomain(makeFinding('Session warmup cache is large', 'medium'))).toBe('cache_waste')
+  it('classifies cache_waste findings', () => {
+    expect(classifyWasteDomain(finding('warmup-heavy'))).toBe('cache_waste')
   })
 
-  it('classifies config_waste titles', () => {
-    expect(classifyWasteDomain(makeFinding('Shrink bash output limit', 'medium'))).toBe('config_waste')
-    expect(classifyWasteDomain(makeFinding('Timeout too high', 'low'))).toBe('config_waste')
+  it('classifies config_waste findings', () => {
+    expect(classifyWasteDomain(finding('bash-output-cap'))).toBe('config_waste')
   })
 
-  it('defaults to other', () => {
-    expect(classifyWasteDomain(makeFinding('Something unknown', 'low'))).toBe('other')
+  it('classifies mcp_waste findings', () => {
+    expect(classifyWasteDomain(finding('unused-mcp'))).toBe('mcp_waste')
+    expect(classifyWasteDomain(finding('mcp-low-coverage'))).toBe('mcp_waste')
+    expect(classifyWasteDomain(finding('mcp-deferral-off'))).toBe('mcp_waste')
+  })
+
+  it('classifies session_waste findings', () => {
+    expect(classifyWasteDomain(finding('cost-outliers'))).toBe('session_waste')
+    expect(classifyWasteDomain(finding('context-heavy-sessions'))).toBe('session_waste')
+  })
+
+  it('classifies retry_waste findings', () => {
+    expect(classifyWasteDomain(finding('retry-heavy-capabilities'))).toBe('retry_waste')
+  })
+
+  it('defaults to other for an unmapped id', () => {
+    expect(classifyWasteDomain({ id: 'totally-new-finding' as FindingId })).toBe('other')
   })
 })
 
@@ -112,7 +149,7 @@ describe('recordMetrics', () => {
   let metrics: Map<string, Array<{ value: number; attributes: Record<string, unknown> }>>
 
   beforeEach(async () => {
-    metrics = await collectMetrics(samplePeriodData, sampleOptimizeResult)
+    metrics = await collectMetrics(sampleSnapshot)
   })
 
   it('all metric names start with codeburn.', () => {
@@ -134,47 +171,98 @@ describe('recordMetrics', () => {
     expect(points[0].value).toBe(20)
   })
 
-  it('records oneshot rate per category with editTurns > 0', () => {
+  it('records pricing coverage when computable', () => {
+    expect(metrics.get('codeburn.pricing.coverage')![0].value).toBe(0.9)
+  })
+
+  it('records self-correction rate', () => {
+    expect(metrics.get('codeburn.workflow.correction_rate')![0].value).toBe(0.25)
+  })
+
+  it('records oneshot rate per activity with a defined rate', () => {
     const points = metrics.get('codeburn.oneshot.rate')!
-    expect(points).toHaveLength(2) // Coding and Debugging, not Exploration
-    const coding = points.find(p => p.attributes.activity === 'Coding')!
-    expect(coding.value).toBe(18 / 20)
-    const debugging = points.find(p => p.attributes.activity === 'Debugging')!
-    expect(debugging.value).toBe(5 / 10)
+    expect(points).toHaveLength(2) // Coding and Debugging, not Exploration (null)
+    expect(points.find(p => p.attributes.activity === 'Coding')!.value).toBe(18 / 20)
+    expect(points.find(p => p.attributes.activity === 'Debugging')!.value).toBe(5 / 10)
   })
 
-  it('records health penalty by domain', () => {
+  it('records per-model oneshot rate and cost per edit', () => {
+    const oneShot = metrics.get('codeburn.model.oneshot_rate')!
+    // Only claude-sonnet-4-6 has a non-null oneShotRate.
+    expect(oneShot).toHaveLength(1)
+    expect(oneShot.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(0.9)
+    const costPerEdit = metrics.get('codeburn.model.cost_per_edit')!
+    expect(costPerEdit.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(0.5)
+    expect(costPerEdit.find(p => p.attributes.model === 'claude-haiku-3.5')!.value).toBe(0.1)
+  })
+
+  it('records per-model retry rate', () => {
+    const points = metrics.get('codeburn.retry.rate')!
+    // Only claude-sonnet-4-6 has a non-null retriesPerEdit.
+    expect(points).toHaveLength(1)
+    expect(points.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(0.4)
+  })
+
+  it('records the routing baseline cost per edit with its model', () => {
+    const points = metrics.get('codeburn.routing.baseline_cost_per_edit')!
+    expect(points[0].value).toBe(0.1)
+    expect(points[0].attributes.model).toBe('claude-haiku-3.5')
+  })
+
+  it('records model-switch recommendations by from/to', () => {
+    const points = metrics.get('codeburn.recommendation.savings_pct')!
+    const rec = points.find(p => p.attributes.from_model === 'claude-sonnet-4-6' && p.attributes.to_model === 'claude-haiku-3.5')!
+    expect(rec.value).toBe(42)
+  })
+
+  it('records health penalty by id-classified domain', () => {
     const points = metrics.get('codeburn.health.penalty')!
-    const contextBloat = points.find(p => p.attributes.domain === 'context_bloat')!
-    expect(contextBloat.value).toBe(15) // high=15
-    // "Claude is re-reading the same files" -> 'other' (no "duplicate read" in title)
-    const other = points.find(p => p.attributes.domain === 'other')!
-    expect(other.value).toBe(7) // medium=7
-    const configWaste = points.find(p => p.attributes.domain === 'config_waste')!
-    expect(configWaste.value).toBe(3) // low=3
+    // claude-md-too-long (high=15) -> context_bloat
+    expect(points.find(p => p.attributes.domain === 'context_bloat')!.value).toBe(15)
+    // redundant-rereads (medium=7) -> read_waste (id-based, no title regex)
+    expect(points.find(p => p.attributes.domain === 'read_waste')!.value).toBe(7)
+    // bash-output-cap (low=3) -> config_waste
+    expect(points.find(p => p.attributes.domain === 'config_waste')!.value).toBe(3)
   })
 
-  it('records cost per model and total', () => {
+  it('records cost per model, provider, category, and total', () => {
     const points = metrics.get('codeburn.cost.usage')!
-    const sonnet = points.find(p => p.attributes.model === 'claude-sonnet-4-6')!
-    expect(sonnet.value).toBe(10)
-    const haiku = points.find(p => p.attributes.model === 'claude-haiku-3.5')!
-    expect(haiku.value).toBe(2.5)
-    const total = points.find(p => p.attributes.provider === 'all')!
-    expect(total.value).toBe(12.5)
+    expect(points.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(10)
+    expect(points.find(p => p.attributes.model === 'claude-haiku-3.5')!.value).toBe(2.5)
+    // Genuine per-provider split.
+    expect(points.find(p => p.attributes.provider === 'claude')!.value).toBe(11)
+    expect(points.find(p => p.attributes.provider === 'codex')!.value).toBe(1.5)
+    // Per activity category.
+    expect(points.find(p => p.attributes.category === 'Coding')!.value).toBe(8)
+    // Grand total.
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBe(12.5)
   })
 
-  it('records token usage by type', () => {
+  it('records estimated and proxied cost', () => {
+    const estimated = metrics.get('codeburn.cost.estimated')!
+    expect(estimated.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(1.25)
+    expect(estimated.find(p => p.attributes.provider === 'all')!.value).toBe(1.25)
+    expect(metrics.get('codeburn.cost.proxied')![0].value).toBe(4)
+  })
+
+  it('records codex credits', () => {
+    expect(metrics.get('codeburn.codex.credits')![0].value).toBe(7)
+  })
+
+  it('records token usage by type including reasoning', () => {
     const points = metrics.get('codeburn.token.usage')!
     expect(points.find(p => p.attributes.type === 'input')!.value).toBe(80000)
     expect(points.find(p => p.attributes.type === 'output')!.value).toBe(20000)
+    expect(points.find(p => p.attributes.type === 'reasoning')!.value).toBe(3000)
     expect(points.find(p => p.attributes.type === 'cache_read')!.value).toBe(20000)
     expect(points.find(p => p.attributes.type === 'cache_write')!.value).toBe(5000)
   })
 
-  it('records session and call counts', () => {
+  it('records session count and per-model api calls', () => {
     expect(metrics.get('codeburn.session.count')![0].value).toBe(5)
-    expect(metrics.get('codeburn.api_call.count')![0].value).toBe(100)
+    const calls = metrics.get('codeburn.api_call.count')!
+    expect(calls.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(80)
+    expect(calls.find(p => p.attributes.provider === 'all')!.value).toBe(100)
   })
 
   it('records activity turns per category', () => {
@@ -184,48 +272,71 @@ describe('recordMetrics', () => {
     expect(points.find(p => p.attributes.category === 'Exploration')!.value).toBe(10)
   })
 
-  it('records optimize findings by impact', () => {
+  it('records realized local-model savings by model, provider, and total', () => {
+    const points = metrics.get('codeburn.savings.local_model.usd')!
+    expect(points.find(p => p.attributes.model === 'llama3.1:8b')!.value).toBe(6)
+    expect(points.find(p => p.attributes.provider === 'ollama')!.value).toBe(6)
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBe(6)
+  })
+
+  it('records retry tax total and per model', () => {
+    const points = metrics.get('codeburn.retry_tax.usd')!
+    expect(points.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(1.5)
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBe(2)
+  })
+
+  it('records routing waste total and per model', () => {
+    const points = metrics.get('codeburn.routing_waste.usd')!
+    expect(points.find(p => p.attributes.model === 'claude-sonnet-4-6')!.value).toBe(3)
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBe(3)
+  })
+
+  it('records optimize findings by impact and by id', () => {
     const points = metrics.get('codeburn.optimize.findings')!
     expect(points.find(p => p.attributes.impact === 'high')!.value).toBe(1)
     expect(points.find(p => p.attributes.impact === 'medium')!.value).toBe(1)
     expect(points.find(p => p.attributes.impact === 'low')!.value).toBe(1)
+    expect(points.find(p => p.attributes.id === 'claude-md-too-long')!.value).toBe(1)
+    expect(points.find(p => p.attributes.id === 'redundant-rereads')!.value).toBe(1)
   })
 
-  it('records total savings tokens', () => {
-    expect(metrics.get('codeburn.optimize.savings_tokens')![0].value).toBe(9000)
+  it('records saveable tokens total and per finding id', () => {
+    const points = metrics.get('codeburn.optimize.savings_tokens')!
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBe(9000)
+    expect(points.find(p => p.attributes.id === 'claude-md-too-long')!.value).toBe(5000)
+  })
+
+  it('records dollarized optimize savings total and per finding id', () => {
+    const points = metrics.get('codeburn.optimize.savings_usd')!
+    // 9000 tokens * 0.00001 costRate
+    expect(points.find(p => p.attributes.provider === 'all')!.value).toBeCloseTo(0.09, 10)
+    expect(points.find(p => p.attributes.id === 'claude-md-too-long')!.value).toBeCloseTo(0.05, 10)
   })
 })
 
 describe('recordMetrics with empty data', () => {
-  it('handles zero PeriodData', async () => {
-    const emptyPeriod: PeriodData = {
-      label: 'empty',
-      cost: 0,
-      calls: 0,
-      sessions: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      categories: [],
-      models: [],
-    }
-    const metrics = await collectMetrics(emptyPeriod, null)
-    // Gauges still emit with zero values
+  it('handles the empty snapshot', async () => {
+    const metrics = await collectMetrics(emptyOtelSnapshot())
+    // Gauges still emit with zero/default values.
     expect(metrics.get('codeburn.health.score')![0].value).toBe(100)
     expect(metrics.get('codeburn.health.score')![0].attributes.grade).toBe('A')
     expect(metrics.get('codeburn.cache_hit.percent')![0].value).toBe(0)
-    // ObservableCounters with zero values still emit data points
+    // ObservableCounters with zero values still emit data points.
     expect(metrics.get('codeburn.session.count')![0].value).toBe(0)
-    expect(metrics.get('codeburn.optimize.savings_tokens')![0].value).toBe(0)
+    expect(metrics.get('codeburn.optimize.savings_tokens')!.find(p => p.attributes.provider === 'all')!.value).toBe(0)
+    // A null pricingCoverage / correctionRate emits no gauge point at all.
+    expect(metrics.has('codeburn.pricing.coverage')).toBe(false)
+    expect(metrics.has('codeburn.workflow.correction_rate')).toBe(false)
   })
 
-  it('handles null OptimizeResult', async () => {
-    const metrics = await collectMetrics(samplePeriodData, null)
+  it('handles a null optimize scan', async () => {
+    const metrics = await collectMetrics({ ...sampleSnapshot, optimize: null })
     expect(metrics.get('codeburn.health.score')![0].value).toBe(100)
     expect(metrics.get('codeburn.health.score')![0].attributes.grade).toBe('A')
-    // With null OptimizeResult, findings counters observe 0 → still emit
+    // With no scan, findings observe only the zero-valued total.
     expect(metrics.get('codeburn.optimize.findings')!.every(p => p.value === 0)).toBe(true)
-    expect(metrics.get('codeburn.optimize.savings_tokens')![0].value).toBe(0)
+    expect(metrics.get('codeburn.optimize.savings_tokens')!.find(p => p.attributes.provider === 'all')!.value).toBe(0)
+    // No model recommendations without a scan.
+    expect(metrics.has('codeburn.recommendation.savings_pct')).toBe(false)
   })
 })

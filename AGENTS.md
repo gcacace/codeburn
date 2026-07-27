@@ -55,10 +55,10 @@ Provider registry is in `src/providers/index.ts`. Lazy loading uses dynamic `imp
 | `currency.ts` | Multi-currency support with conversion |
 | `plan-usage.ts` | Subscription plan budget tracking |
 | `export.ts` | CSV and JSON export |
-| `otel.ts` | OpenTelemetry MeterProvider init, metric emission orchestrator |
+| `otel.ts` | OpenTelemetry MeterProvider init, `buildResource` (auto-attaches `codeburn.device_id` + `host.name`), `emitOtelMetrics(config, OtelSnapshot)` orchestrator |
 | `otel-sigv4.ts` | Custom OTLP exporter with AWS SigV4 signing (lazy-loads AWS SDK) |
 | `otel-headers.ts` | Dynamic headers helper for enterprise OTEL auth |
-| `otel-metrics.ts` | Maps CodeBurn data to OpenTelemetry metric instruments |
+| `otel-metrics.ts` | `OtelSnapshot` type + `buildOtelSnapshot`/`recordMetrics`: maps a snapshot to OTEL instruments (spend, efficiency/waste, realized savings, model recommendations); waste domains keyed by stable `FindingId` |
 
 ### Data Flow
 
@@ -81,11 +81,15 @@ interface OtelConfig {
     profile?: string                        // optional AWS credentials profile
   }
   headersHelper?: string                    // path to executable that outputs JSON headers to stdout
-  resourceAttributes?: Record<string, string> // extra OTEL resource attributes (e.g. department, team.id)
+  resourceAttributes?: Record<string, string> // extra OTEL resource attributes (e.g. department, cost_center, team.id, user.email, organization)
 }
 ```
 
-When `enabled` is true, `emitOtelMetrics()` is called fire-and-forget after the `status --format menubar-json` today poll (the menubar's ~30s refresh) and, for non-menubar users, when `--emit-otel` is passed to `report --format json` or `status`. The `otel test` CLI command awaits the call to verify connectivity.
+`resourceAttributes` are the org-slicing dimensions: they ride on every emitted metric so a company can group fleet-wide spend/waste by department, team, cost center, etc. `buildResource` also auto-attaches a pseudonymous `codeburn.device_id` (salted hash of host+username) and `host.name` for per-developer drill-down; config attributes are spread last and win on key collision.
+
+Emission flows through `buildOtelSnapshot(payload.current, optimize, liveProjects)` → `emitOtelMetrics(config, snapshot, dayStart)`. The `OtelSnapshot` carries the rich menubar-grade figures (real per-provider cost, per-model efficiency, retry tax, routing waste, realized local-model savings, model recommendations) so the instruments have data without re-aggregating. `main.ts`'s `emitOtelSnapshot` reuses the menubar payload it already built on the `status --format menubar-json` today poll (the menubar's ~30s refresh); for non-menubar users it rebuilds from cache when `--emit-otel` is passed to `report --format json` or `status`. All emission is fire-and-forget; `otel test` awaits an `emptyOtelSnapshot()` send to verify connectivity.
+
+Cumulative counters report today's running total and are anchored to local midnight: `emitOtelMetrics` takes the snapshot's `dayStart` (`getDateRange('today').range.start`, passed in so it matches the exact day the values cover) and `StartTimeOverrideExporter` (`otel-start-time.ts`) pins every data point's `startTimeUnixNano` to it before the standard/SigV4 exporter serializes — so the series is a clean per-day counter rather than one whose start time churns on every push.
 
 ## Coding Conventions
 
