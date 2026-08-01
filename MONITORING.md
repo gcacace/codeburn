@@ -3,6 +3,8 @@
 Complete reference for the metrics CodeBurn exports over OpenTelemetry. For setup
 (endpoint, SigV4, headers, `codeburn otel` commands) see the
 [OpenTelemetry monitoring](README.md#opentelemetry-monitoring) section of the README.
+An importable Grafana dashboard for these metrics ships at
+[`docs/observability/grafana-dashboard.json`](docs/observability/README.md).
 
 ## How metrics are emitted
 

@@ -474,6 +474,10 @@ Health grade distribution:
 count by (grade) (codeburn_health_score)
 ```
 
+### Prebuilt Grafana dashboard
+
+An importable dashboard — spend, efficiency/waste, and realized-savings panels sliced by department and device — ships at [`docs/observability/grafana-dashboard.json`](docs/observability/grafana-dashboard.json). See [docs/observability/README.md](docs/observability/README.md) for import steps and the data-source requirement.
+
 ## CodeBurn in your agent (MCP)
 
 ```bash
