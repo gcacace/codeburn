@@ -8,7 +8,7 @@ import { normalizeContentBlocks } from './content-utils.js'
 import { discoverAllSessions, getProvider } from './providers/index.js'
 import { flushCodexCache } from './codex-cache.js'
 import { antigravityCascadeIdFromPath, flushAntigravityCache, shouldReparseAntigravitySource } from './providers/antigravity.js'
-import { getDesktopSessionsDir } from './providers/claude.js'
+import { getDesktopSessionsDirs } from './providers/claude.js'
 import { isSqliteBusyError } from './sqlite.js'
 import {
   type CachedCall,
@@ -81,9 +81,13 @@ function projectNameFromPath(projectPath: string, fallback: string): string {
 // In both cases the grouping key comes from the Cowork space name resolved in
 // claude.ts::discoverSessions().
 function isCoworkSession(cwd: string, filePath: string): boolean {
-  const base = resolve(getDesktopSessionsDir())
-  const inBase = (p: string) => p.startsWith(base + sep) || p.startsWith(base + '/')
-  return inBase(resolve(cwd)) || inBase(resolve(filePath))
+  const resolvedCwd = resolve(cwd)
+  const resolvedFilePath = resolve(filePath)
+  return getDesktopSessionsDirs().some(base => {
+    const resolvedBase = resolve(base)
+    const inBase = (p: string) => p.startsWith(resolvedBase + sep) || p.startsWith(resolvedBase + '/')
+    return inBase(resolvedCwd) || inBase(resolvedFilePath)
+  })
 }
 
 async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string; isWorktree: boolean }> {
@@ -1730,6 +1734,11 @@ function buildSessionSummary(
       modelBreakdown[modelKey].tokens.cacheReadInputTokens += call.usage.cacheReadInputTokens
       modelBreakdown[modelKey].tokens.cacheCreationInputTokens += call.usage.cacheCreationInputTokens
       modelBreakdown[modelKey].tokens.reasoningTokens += call.usage.reasoningTokens
+      if (call.activeDurationMs !== undefined) {
+        modelBreakdown[modelKey].activeDurationMs = (modelBreakdown[modelKey].activeDurationMs ?? 0) + call.activeDurationMs
+        modelBreakdown[modelKey].activeGeneratedTokens = (modelBreakdown[modelKey].activeGeneratedTokens ?? 0) + (call.activeGeneratedTokens ?? call.usage.outputTokens + call.usage.reasoningTokens)
+        modelBreakdown[modelKey].toolWaitMs = (modelBreakdown[modelKey].toolWaitMs ?? 0) + (call.toolWaitMs ?? 0)
+      }
 
       for (const tool of extractCoreTools(call.tools)) {
         toolBreakdown[tool] = toolBreakdown[tool] ?? { calls: 0 }
@@ -2389,6 +2398,9 @@ function providerCallToCachedCall(call: ParsedProviderCall): CachedCall {
     ...(call.locAdded ? { locAdded: call.locAdded } : {}),
     ...(call.locRemoved ? { locRemoved: call.locRemoved } : {}),
     ...(call.editFailed ? { editFailed: call.editFailed } : {}),
+    activeDurationMs: call.activeDurationMs,
+    activeGeneratedTokens: call.activeGeneratedTokens,
+    toolWaitMs: call.toolWaitMs,
   }
 }
 
@@ -2425,6 +2437,9 @@ function apiCallToCachedCall(call: ParsedApiCall): CachedCall {
     ...(call.interrupted ? { interrupted: true } : {}),
     ...(call.userModified ? { userModified: true } : {}),
     ...(call.toolErrors ? { toolErrors: call.toolErrors } : {}),
+    activeDurationMs: call.activeDurationMs,
+    activeGeneratedTokens: call.activeGeneratedTokens,
+    toolWaitMs: call.toolWaitMs,
   }
 }
 
@@ -2537,6 +2552,9 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
     deduplicationKey: call.deduplicationKey,
     cacheCreationOneHourTokens: u.cacheCreationOneHourTokens || undefined,
     toolSequence: call.toolSequence,
+    activeDurationMs: call.activeDurationMs,
+    activeGeneratedTokens: call.activeGeneratedTokens,
+    toolWaitMs: call.toolWaitMs,
   })
 }
 
