@@ -85,7 +85,7 @@ interface OtelConfig {
 }
 ```
 
-`resourceAttributes` are the org-slicing dimensions: they ride on every emitted metric so a company can group fleet-wide spend/waste by department, team, cost center, etc. `buildResource` also auto-attaches a pseudonymous `codeburn.device_id` (salted hash of host+username) and `host.name` for per-developer drill-down; config attributes are spread last and win on key collision.
+`resourceAttributes` are the org-slicing dimensions: they ride on every emitted metric so a company can group fleet-wide spend/waste by department, team, cost center, etc. `buildResource` also auto-attaches a pseudonymous `codeburn.device_id` (SHA-256 hash of host+username) and `host.name` for per-developer drill-down; config attributes are spread last and win on key collision.
 
 Emission flows through `buildOtelSnapshot(payload.current, optimize, liveProjects)` → `emitOtelMetrics(config, snapshot, dayStart)`. The `OtelSnapshot` carries the rich menubar-grade figures (real per-provider cost, per-model efficiency, retry tax, routing waste, realized local-model savings, model recommendations) so the instruments have data without re-aggregating. `main.ts`'s `emitOtelSnapshot` reuses the menubar payload it already built on the `status --format menubar-json` today poll (the menubar's ~30s refresh); for non-menubar users it rebuilds from cache when `--emit-otel` is passed to `report --format json` or `status`. All emission is fire-and-forget; `otel test` awaits an `emptyOtelSnapshot()` send to verify connectivity.
 

@@ -411,13 +411,13 @@ The `set` subcommand merges with existing config — resource attributes accumul
 
 ### Available metrics
 
-CodeBurn exports 25 instruments (11 gauges + 14 cumulative sums). **[MONITORING.md](MONITORING.md) is the full reference** — every metric name, instrument type, unit, and attribute (with the resource-vs-data-point distinction, waste-domain and finding-id tables, and example queries). At a glance:
+CodeBurn exports 25 instruments (11 gauges + 14 cumulative sums). **[docs/observability/metrics.md](docs/observability/metrics.md) is the full reference** — every metric name, instrument type, unit, and attribute (with the resource-vs-data-point distinction, waste-domain and finding-id tables, and example queries). At a glance:
 
 - **Spend** — `codeburn.cost.usage` (by model / provider / category / total), `cost.estimated`, `cost.proxied`, `codex.credits`, `token.usage` (by direction incl. reasoning), `session.count`, `api_call.count`, `activity.turns`, `pricing.coverage`.
 - **Efficiency & waste** — `cache_hit.percent`, `oneshot.rate`, `model.oneshot_rate`, `model.cost_per_edit`, `retry.rate`, `retry_tax.usd`, `routing_waste.usd`, `routing.baseline_cost_per_edit`, `workflow.correction_rate`, `health.score`, `health.penalty`, `optimize.findings`, `optimize.savings_tokens`, `optimize.savings_usd`.
 - **Realized savings & recommendations** — `savings.local_model.usd`, `recommendation.savings_pct`.
 
-**Resource attributes.** Every metric includes the `resourceAttributes` from your config (e.g. `department`, `cost_center`, `team.id`, `user.email`, `organization`) — this is how you slice fleet-wide spend and waste by org structure. CodeBurn also auto-attaches a pseudonymous `codeburn.device_id` (a salted hash of host + username — never the raw values) and `host.name`, so you can drill down to an individual developer or machine even before an org configures `user.email`. Any config attribute overrides an auto-attached one with the same key. See [MONITORING.md](MONITORING.md#attributes-resource-vs-data-point) for the full attribute reference.
+**Resource attributes.** Every metric includes the `resourceAttributes` from your config (e.g. `department`, `cost_center`, `team.id`, `user.email`, `organization`) — this is how you slice fleet-wide spend and waste by org structure. CodeBurn also auto-attaches a pseudonymous `codeburn.device_id` (a SHA-256 hash of host + username — never the raw values) and `host.name`, so you can drill down to an individual developer or machine even before an org configures `user.email`. Any config attribute overrides an auto-attached one with the same key. See [the metrics reference](docs/observability/metrics.md#attributes-resource-vs-data-point) for the full attribute reference.
 
 ### Menubar integration
 
@@ -462,7 +462,7 @@ Biggest routing-waste opportunities by cost center:
 sum by (cost_center) (codeburn_routing_waste_usd{provider="all"})
 ```
 
-Cost by model (select the model breakdown only — see [MONITORING.md](MONITORING.md#the-providerall-convention)):
+Cost by model (select the model breakdown only — see [the metrics reference](docs/observability/metrics.md#the-providerall-convention)):
 
 ```promql
 sum by (model) (codeburn_cost_usage{model!=""})

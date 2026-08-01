@@ -1,17 +1,29 @@
-# Grafana dashboard
+# Observability
+
+How CodeBurn's OpenTelemetry export works, what it emits, and how to visualize it.
+
+- **[metrics.md](metrics.md)** — the full `codeburn.*` metric reference: every instrument,
+  type, unit, and attribute, with waste-domain / finding-id tables and example queries.
+- **[grafana-dashboard.json](grafana-dashboard.json)** — an importable Grafana dashboard
+  (see the [dashboard guide](#grafana-dashboard) below).
+- For turning export on (endpoint, SigV4, `codeburn otel` commands), see the README's
+  [OpenTelemetry monitoring](../../README.md#opentelemetry-monitoring) section.
+
+## Grafana dashboard
 
 [`grafana-dashboard.json`](grafana-dashboard.json) is an importable Grafana dashboard —
 **"CodeBurn — AI Coding Spend & Efficiency"** — that visualizes the `codeburn.*`
-OpenTelemetry metrics CodeBurn exports (see [../../MONITORING.md](../../MONITORING.md) for
-the full metric reference and [the README's OpenTelemetry section](../../README.md#opentelemetry-monitoring)
-for how to turn export on).
+OpenTelemetry metrics CodeBurn exports (see [metrics.md](metrics.md) for the full metric
+reference).
 
 It has three sections — **Spend**, **Efficiency & waste**, and **Realized savings &
 recommendations** — and two template variables, **Department** and **Device**, that slice
 every panel by the `@resource.department` / `@resource.codeburn.device_id` resource
-attributes. The top row is single-value stat tiles aggregated across the selected fleet
-(`sum` for dollars/tokens/counts, `avg` for rates and scores); everything below breaks the
-fleet out into per-model / per-provider / per-category series.
+attributes. Each section opens with a row of single-value stat tiles aggregated across the
+selected fleet (`sum` for dollars/tokens/counts; `avg` for the rate/score tiles, which sit in
+the Efficiency & waste and Realized savings sections). The remaining panels break the fleet
+out into per-model / per-provider / per-category / per-activity / per-domain / per-finding-id
+series.
 
 ## Requirements
 

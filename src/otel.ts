@@ -19,7 +19,7 @@ export function buildResource(config: OtelConfig): Resource {
     [ATTR_SERVICE_NAME]: 'codeburn',
     [ATTR_SERVICE_VERSION]: version,
     // Pseudonymous per-machine identity so an org can drill into a single
-    // developer/host before configuring user.email. device_id is a salted
+    // developer/host before configuring user.email. device_id is a SHA-256
     // hash of host:user (never the raw values); host.name follows OTel's
     // `host.name` semantic convention. User-configured resourceAttributes are
     // spread LAST so an org can override or suppress either of these.

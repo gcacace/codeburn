@@ -2,9 +2,9 @@
 
 Complete reference for the metrics CodeBurn exports over OpenTelemetry. For setup
 (endpoint, SigV4, headers, `codeburn otel` commands) see the
-[OpenTelemetry monitoring](README.md#opentelemetry-monitoring) section of the README.
+[OpenTelemetry monitoring](../../README.md#opentelemetry-monitoring) section of the README.
 An importable Grafana dashboard for these metrics ships at
-[`docs/observability/grafana-dashboard.json`](docs/observability/README.md).
+[`grafana-dashboard.json`](grafana-dashboard.json) (see the [dashboard guide](README.md)).
 
 ## How metrics are emitted
 
@@ -12,7 +12,7 @@ An importable Grafana dashboard for these metrics ships at
 - **Protocol:** OTLP/HTTP (standard exporter, or a SigV4-signed exporter for AWS endpoints)
 - **Temporality:** `CUMULATIVE` for all sum instruments
 - **Scope:** each emission reports **today's running total** (the current local day), anchored to local midnight — see [Cumulative metrics and time](#cumulative-metrics-and-time)
-- **Cadence:** one push per emit — the macOS menubar polls ~every 30s; CLI users push once per `--emit-otel` invocation. See the README's [Menubar integration](README.md#menubar-integration).
+- **Cadence:** one push per emit — the macOS menubar polls ~every 30s; CLI users push once per `--emit-otel` invocation. See the README's [Menubar integration](../../README.md#menubar-integration).
 
 Metrics come in two instrument families:
 
@@ -32,7 +32,7 @@ OpenTelemetry has two attribute scopes, and CodeBurn uses both deliberately:
 |-----------|--------|---------|
 | `service.name` | fixed | Always `codeburn`. |
 | `service.version` | package version | The CodeBurn CLI version that emitted the metrics. |
-| `codeburn.device_id` | auto | Pseudonymous per-machine id — a salted SHA-256 of `host:username` (16 hex chars), never the raw host or user. Lets you drill down to one developer/machine without exposing identity. |
+| `codeburn.device_id` | auto | Pseudonymous per-machine id — a SHA-256 of `host:username` truncated to 16 hex chars, never the raw host or user. Lets you drill down to one developer/machine without exposing identity. |
 | `host.name` | auto | OS hostname of the emitting machine (OTel `host.name` convention). |
 | *(your config keys)* | `otel.resourceAttributes` | Any keys you set, e.g. `department`, `cost_center`, `team.id`, `user.email`, `organization`. These are the primary org-slicing dimensions. |
 
@@ -69,19 +69,19 @@ codeburn_cost_usage{provider="all"}          # the day's total spend, pre-comput
 > sum by (category) (codeburn_cost_usage{category!=""})    # per-category breakdown
 > ```
 >
-> Each breakdown independently sums back to the grand total. Metrics that carry only a single breakdown plus `provider="all"` (e.g. `retry_tax.usd`, `optimize.savings_tokens`) have the same rule: filter to the breakdown key or read `{provider="all"}`.
+> The `provider` and `category` breakdowns each sum back to the grand total. The `model` breakdown is capped at the top 20 models by cost (and excludes an internal synthetic-model placeholder), so summing the model series can fall short of the total when a day spans more than 20 models — read `{provider="all"}` for the exact total. Metrics that carry only a single breakdown plus `provider="all"` (e.g. `retry_tax.usd`, `optimize.savings_tokens`) follow the same rule: filter to the breakdown key or read `{provider="all"}`.
 
 ## Spend metrics
 
 | Metric | Instrument | Unit | Data-point attributes | Meaning |
 |--------|-----------|------|-----------------------|---------|
-| `codeburn.cost.usage` | Sum (cumulative) | USD | `model` (per model), `provider` (per provider), `category` (per task category), and `provider="all"` (grand total) | Estimated API cost. Emitted as three independent breakdowns of the same total plus the grand total. |
+| `codeburn.cost.usage` | Sum (cumulative) | USD | `model` (per model, top 20 by cost), `provider` (per provider), `category` (per task category), and `provider="all"` (grand total) | Estimated API cost. Emitted as three independent breakdowns of the same total plus the grand total. |
 | `codeburn.cost.estimated` | Sum (cumulative) | USD | `model` (per model, only when > 0), `provider="all"` (total) | Portion of cost priced from *estimated* tokens (guessed vs. metered spend). |
 | `codeburn.cost.proxied` | Sum (cumulative) | USD | none | Cost covered by a subscription-backed proxy. Net out-of-pocket = `cost.usage{provider="all"}` − this. |
 | `codeburn.codex.credits` | Sum (cumulative) | Codex credits | none | Codex credits consumed in the period (0 when there is no Codex usage). |
 | `codeburn.token.usage` | Sum (cumulative) | tokens | `type` (`input`/`output`/`reasoning`/`cache_read`/`cache_write`) | Token consumption by direction and caching. |
 | `codeburn.session.count` | Sum (cumulative) | sessions | none | Number of AI coding sessions started. |
-| `codeburn.api_call.count` | Sum (cumulative) | calls | `model` (per model), `provider="all"` (total) | API calls, per model and grand total. |
+| `codeburn.api_call.count` | Sum (cumulative) | calls | `model` (per model, top 20 by cost), `provider="all"` (total) | API calls, per model and grand total. |
 | `codeburn.activity.turns` | Sum (cumulative) | turns | `category` | User turns classified by task type. |
 | `codeburn.pricing.coverage` | Gauge | ratio 0–1 | none | Share of cost-bearing calls that resolved a price. **Omitted entirely when not computable** — a missing series means "unknown," never 100%. |
 
@@ -169,6 +169,12 @@ Grafana's **"Cumulative sum"** transform. The raw counter value
 
 ## Example queries
 
+The examples below use the plain-Prometheus name form (`codeburn_cost_usage`). Against the
+CloudWatch PromQL-compatible / Amazon Managed Prometheus data source the shipped Grafana
+dashboard targets, names stay dotted (`{"codeburn.cost.usage", …}`) and resource attributes
+surface as `@resource.*` labels — see the [metric-name syntax note](README.md#metric-name-syntax-note-cloudwatch-promql)
+in the dashboard guide before copying a query.
+
 Slicing fleet-wide data by the org dimensions you set as resource attributes:
 
 ```promql
@@ -194,5 +200,8 @@ sum by (provider) (codeburn_savings_local_model_usd{provider!="all"})
 sum by (model) (codeburn_cost_usage{model!=""})
 ```
 
-> PromQL replaces `.` with `_` in metric names, so `codeburn.cost.usage` is queried as
-> `codeburn_cost_usage`.
+> On a plain Prometheus data source, PromQL replaces `.` with `_` in metric names, so
+> `codeburn.cost.usage` is queried as `codeburn_cost_usage` (the form used above). On the
+> CloudWatch PromQL-compatible / Amazon Managed Prometheus data source, names keep their dots
+> and are matched as `{"codeburn.cost.usage", …}` — see the
+> [metric-name syntax note](README.md#metric-name-syntax-note-cloudwatch-promql).
