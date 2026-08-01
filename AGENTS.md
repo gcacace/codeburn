@@ -58,7 +58,7 @@ Provider registry is in `src/providers/index.ts`. Lazy loading uses dynamic `imp
 | `otel.ts` | OpenTelemetry MeterProvider init, `buildResource` (auto-attaches `codeburn.device_id` + `host.name`), `emitOtelMetrics(config, OtelSnapshot)` orchestrator |
 | `otel-sigv4.ts` | Custom OTLP exporter with AWS SigV4 signing (lazy-loads AWS SDK) |
 | `otel-headers.ts` | Dynamic headers helper for enterprise OTEL auth |
-| `otel-metrics.ts` | `OtelSnapshot` type + `buildOtelSnapshot`/`recordMetrics`: maps a snapshot to OTEL instruments (spend, efficiency/waste, realized savings, model recommendations); waste domains keyed by stable `FindingId` |
+| `otel-metrics.ts` | `OtelSnapshot` type + `buildOtelSnapshot`/`recordMetrics`: maps a snapshot to OTEL instruments (spend, efficiency/waste, realized savings, model recommendations, top-N tool/MCP/skill/subagent usage); waste domains keyed by stable `FindingId` |
 
 ### Data Flow
 

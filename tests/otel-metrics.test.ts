@@ -66,6 +66,23 @@ const sampleSnapshot: OtelSnapshot = {
       { fromModel: 'claude-sonnet-4-6', toModel: 'claude-haiku-3.5', savingsPct: 42 },
     ],
   },
+  tools: [
+    { name: 'Read', calls: 120 },
+    { name: 'Edit', calls: 45 },
+    { name: 'Bash', calls: 30 },
+  ],
+  mcpServers: [
+    { name: 'builder-mcp', calls: 12 },
+    { name: 'chrome-devtools', calls: 4 },
+  ],
+  skills: [
+    { name: 'crux-code-reviews', turns: 8, cost: 1.2 },
+    { name: 'brazil', turns: 3, cost: 0.4 },
+  ],
+  subagents: [
+    { name: 'planner', calls: 5, cost: 2.5 },
+    { name: 'reviewer', calls: 2, cost: 0.8 },
+  ],
 }
 
 async function collectMetrics(snapshot: OtelSnapshot) {
@@ -272,6 +289,40 @@ describe('recordMetrics', () => {
     expect(points.find(p => p.attributes.category === 'Exploration')!.value).toBe(10)
   })
 
+  it('records tool calls per tool with no grand total', () => {
+    const points = metrics.get('codeburn.tool.calls')!
+    expect(points.find(p => p.attributes.tool === 'Read')!.value).toBe(120)
+    expect(points.find(p => p.attributes.tool === 'Edit')!.value).toBe(45)
+    expect(points.find(p => p.attributes.tool === 'Bash')!.value).toBe(30)
+    // Top-N slice: no provider="all" grand total (summing a slice undercounts).
+    expect(points.some(p => p.attributes.provider === 'all')).toBe(false)
+  })
+
+  it('records mcp server calls per server', () => {
+    const points = metrics.get('codeburn.mcp.calls')!
+    expect(points.find(p => p.attributes.mcp_server === 'builder-mcp')!.value).toBe(12)
+    expect(points.find(p => p.attributes.mcp_server === 'chrome-devtools')!.value).toBe(4)
+    expect(points.some(p => p.attributes.provider === 'all')).toBe(false)
+  })
+
+  it('records skill turns and cost per skill', () => {
+    const turns = metrics.get('codeburn.skill.turns')!
+    expect(turns.find(p => p.attributes.skill === 'crux-code-reviews')!.value).toBe(8)
+    expect(turns.find(p => p.attributes.skill === 'brazil')!.value).toBe(3)
+    const cost = metrics.get('codeburn.skill.cost')!
+    expect(cost.find(p => p.attributes.skill === 'crux-code-reviews')!.value).toBeCloseTo(1.2, 10)
+    expect(cost.find(p => p.attributes.skill === 'brazil')!.value).toBeCloseTo(0.4, 10)
+  })
+
+  it('records subagent calls and cost per subagent', () => {
+    const calls = metrics.get('codeburn.subagent.calls')!
+    expect(calls.find(p => p.attributes.subagent === 'planner')!.value).toBe(5)
+    expect(calls.find(p => p.attributes.subagent === 'reviewer')!.value).toBe(2)
+    const cost = metrics.get('codeburn.subagent.cost')!
+    expect(cost.find(p => p.attributes.subagent === 'planner')!.value).toBeCloseTo(2.5, 10)
+    expect(cost.find(p => p.attributes.subagent === 'reviewer')!.value).toBeCloseTo(0.8, 10)
+  })
+
   it('records realized local-model savings by model, provider, and total', () => {
     const points = metrics.get('codeburn.savings.local_model.usd')!
     expect(points.find(p => p.attributes.model === 'llama3.1:8b')!.value).toBe(6)
@@ -327,6 +378,11 @@ describe('recordMetrics with empty data', () => {
     // A null pricingCoverage / correctionRate emits no gauge point at all.
     expect(metrics.has('codeburn.pricing.coverage')).toBe(false)
     expect(metrics.has('codeburn.workflow.correction_rate')).toBe(false)
+    // Usage metrics observe nothing when their arrays are empty (no points).
+    expect(metrics.get('codeburn.tool.calls') ?? []).toHaveLength(0)
+    expect(metrics.get('codeburn.mcp.calls') ?? []).toHaveLength(0)
+    expect(metrics.get('codeburn.skill.cost') ?? []).toHaveLength(0)
+    expect(metrics.get('codeburn.subagent.cost') ?? []).toHaveLength(0)
   })
 
   it('handles a null optimize scan', async () => {

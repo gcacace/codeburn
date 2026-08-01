@@ -52,6 +52,10 @@ Config `resourceAttributes` are applied **last**, so a config key overrides an a
 | `impact` | `optimize.findings` | Finding severity: `high`, `medium`, `low`. |
 | `id` | `optimize.findings`, `optimize.savings_tokens`, `optimize.savings_usd` | Stable finding id (see [Finding ids](#finding-ids)). |
 | `from_model` / `to_model` | `recommendation.savings_pct` | Current model → suggested cheaper/faster model for a switch recommendation. |
+| `tool` | `tool.calls` | Tool name (`Read`, `Edit`, `Bash`, `Grep`, …). MCP tools are counted separately under `mcp_server`. |
+| `mcp_server` | `mcp.calls` | MCP server name (the `<server>` in `mcp__<server>__<tool>`), e.g. `builder-mcp`. |
+| `skill` | `skill.turns`, `skill.cost` | Skill name invoked via the `Skill` tool. |
+| `subagent` | `subagent.calls`, `subagent.cost` | Subagent type dispatched via `Agent`/`Task`. |
 
 #### The `provider="all"` convention
 
@@ -110,6 +114,40 @@ codeburn_cost_usage{provider="all"}          # the day's total spend, pre-comput
 |--------|-----------|------|-----------------------|---------|
 | `codeburn.savings.local_model.usd` | Sum (cumulative) | USD | `model` (per model), `provider` (per provider), `provider="all"` (total) | Spend already **avoided** by running local models mapped via `codeburn model-savings`. Distinct from routing/optimize savings, which are *hypothetical* opportunities. |
 | `codeburn.recommendation.savings_pct` | Gauge | percent | `from_model`, `to_model` | Potential % saved by switching model, from the optimize scan. Carries no project name/path. |
+
+## Tool & capability usage
+
+Which tools, MCP servers, skills, and subagents developers actually reach for — the inputs
+for top-N "what are we using" analysis across a fleet.
+
+| Metric | Instrument | Unit | Data-point attributes | Meaning |
+|--------|-----------|------|-----------------------|---------|
+| `codeburn.tool.calls` | Sum (cumulative) | calls | `tool` (per tool, top 10 by calls) | How many times each tool was invoked (`Read`, `Edit`, `Bash`, …). |
+| `codeburn.mcp.calls` | Sum (cumulative) | calls | `mcp_server` (per server, top 10 by calls) | How many times each MCP server's tools were invoked. |
+| `codeburn.skill.turns` | Sum (cumulative) | turns | `skill` (per skill, top 10 by cost) | Turns that invoked each skill. |
+| `codeburn.skill.cost` | Sum (cumulative) | USD | `skill` (per skill, top 10 by cost) | Cost attributed to turns that invoked each skill. |
+| `codeburn.subagent.calls` | Sum (cumulative) | calls | `subagent` (per subagent, top 10 by cost) | Dispatches of each subagent type. |
+| `codeburn.subagent.cost` | Sum (cumulative) | USD | `subagent` (per subagent, top 10 by cost) | Cost attributed to calls that dispatched each subagent type. |
+
+> **Count-only for tools and MCP.** There is **no per-tool cost or token attribution** — a
+> single API call bundles many tool invocations and its cost cannot be split among them, so
+> `codeburn.tool.calls` and `codeburn.mcp.calls` are pure call counters. `skill`/`subagent`
+> *do* carry cost, but it is the whole enclosing turn/call cost attributed to that capability,
+> not a per-tool split.
+>
+> **These are top-10 slices with NO `provider="all"` grand total.** Unlike the spend metrics,
+> each push carries only the top 10 names for that dimension and no pre-computed total (the
+> full set is not available downstream). This is the mirror image of the [do-not-sum
+> caveat](#the-providerall-convention) above: here there is nothing to over-count, but you
+> also cannot recover a true fleet total by summing the series — a day with >10 distinct
+> names is truncated. Query these with `topk`, e.g.:
+>
+> ```promql
+> topk(10, sum by (tool)    (codeburn_tool_calls))   # most-used tools
+> topk(10, sum by (mcp_server)(codeburn_mcp_calls))  # busiest MCP servers
+> topk(5,  sum by (skill)   (codeburn_skill_cost))   # priciest skills
+> topk(5,  sum by (subagent)(codeburn_subagent_cost))# priciest subagents
+> ```
 
 ## Waste domains
 
@@ -198,6 +236,15 @@ sum by (provider) (codeburn_savings_local_model_usd{provider!="all"})
 
 # Cost by model (select the model breakdown only)
 sum by (model) (codeburn_cost_usage{model!=""})
+
+# Most-used tools across the fleet (top-N slice, no grand total — see Tool & capability usage)
+topk(10, sum by (tool) (codeburn_tool_calls))
+
+# Busiest MCP servers by team
+topk(5, sum by (team_id, mcp_server) (codeburn_mcp_calls))
+
+# Skill cost by department
+sum by (department, skill) (codeburn_skill_cost)
 ```
 
 > On a plain Prometheus data source, PromQL replaces `.` with `_` in metric names, so

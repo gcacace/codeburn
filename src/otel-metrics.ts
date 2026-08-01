@@ -112,6 +112,17 @@ export type OtelSnapshot = {
     findings: Array<{ id: FindingId; impact: Impact; tokensSaved: number; trend?: string }>
     modelRecommendations: Array<{ fromModel: string; toModel: string; savingsPct: number }>
   } | null
+
+  // Top-N usage breakdowns (inherited caps: top-10 each, straight off the
+  // menubar payload). tool/mcp are count-only — there is no per-tool cost or
+  // token attribution in the model (many tools share one API call's cost) — so
+  // those emit call counts only. skill/subagent additionally carry attributed
+  // cost. None of these carry a reliable grand total (they are top-N slices),
+  // so recordMetrics emits no `provider:'all'` point for them.
+  tools: Array<{ name: string; calls: number }>
+  mcpServers: Array<{ name: string; calls: number }>
+  skills: Array<{ name: string; turns: number; cost: number }>
+  subagents: Array<{ name: string; calls: number; cost: number }>
 }
 
 /// Sum the subscription-proxied cost and reasoning tokens the MenubarPayload
@@ -198,6 +209,11 @@ export function buildOtelSnapshot(
           })),
         }
       : null,
+    // Pass-through of the menubar payload's already-capped top-10 usage arrays.
+    tools: current.tools.map(t => ({ name: t.name, calls: t.calls })),
+    mcpServers: current.mcpServers.map(s => ({ name: s.name, calls: s.calls })),
+    skills: current.skills.map(sk => ({ name: sk.name, turns: sk.turns, cost: sk.cost })),
+    subagents: current.subagents.map(sa => ({ name: sa.name, calls: sa.calls, cost: sa.cost })),
   }
 }
 
@@ -214,6 +230,7 @@ export function emptyOtelSnapshot(): OtelSnapshot {
     routingWaste: { totalSavingsUSD: 0, baselineModel: '', baselineCostPerEdit: 0, byModel: [] },
     localModelSavings: { totalUSD: 0, byModel: [], byProvider: [] },
     optimize: null,
+    tools: [], mcpServers: [], skills: [], subagents: [],
   }
 }
 
@@ -348,6 +365,45 @@ export function recordMetrics(meter: Meter, snapshot: OtelSnapshot): void {
   const turnsCounter = meter.createObservableCounter('codeburn.activity.turns')
   turnsCounter.addCallback((obs) => {
     for (const cat of snapshot.categories) obs.observe(cat.turns, { category: cat.name })
+  })
+
+  // --- Tool / MCP / skill / subagent usage (top-10 per dimension) -----------
+  // These are top-N slices off the payload, so NO grand total is emitted:
+  // summing a slice would undercount days with >10 distinct names, and the
+  // snapshot carries no reliable full total for these dimensions. Dashboards
+  // read them with `topk(N, sum by (<dim>)(...))`, not as a fleet total.
+
+  // Tool calls per tool: count only. There is no per-tool cost/token
+  // attribution in the model (many tools share one API call's cost).
+  const toolCallCounter = meter.createObservableCounter('codeburn.tool.calls')
+  toolCallCounter.addCallback((obs) => {
+    for (const t of snapshot.tools) obs.observe(t.calls, { tool: t.name })
+  })
+
+  // MCP server calls per server: count only, same constraint as tools.
+  const mcpCallCounter = meter.createObservableCounter('codeburn.mcp.calls')
+  mcpCallCounter.addCallback((obs) => {
+    for (const s of snapshot.mcpServers) obs.observe(s.calls, { mcp_server: s.name })
+  })
+
+  // Skills: turns and attributed cost per skill.
+  const skillTurnsCounter = meter.createObservableCounter('codeburn.skill.turns')
+  skillTurnsCounter.addCallback((obs) => {
+    for (const sk of snapshot.skills) obs.observe(sk.turns, { skill: sk.name })
+  })
+  const skillCostCounter = meter.createObservableCounter('codeburn.skill.cost')
+  skillCostCounter.addCallback((obs) => {
+    for (const sk of snapshot.skills) obs.observe(sk.cost, { skill: sk.name })
+  })
+
+  // Subagents: dispatch count and attributed cost per subagent type.
+  const subagentCallCounter = meter.createObservableCounter('codeburn.subagent.calls')
+  subagentCallCounter.addCallback((obs) => {
+    for (const sa of snapshot.subagents) obs.observe(sa.calls, { subagent: sa.name })
+  })
+  const subagentCostCounter = meter.createObservableCounter('codeburn.subagent.cost')
+  subagentCostCounter.addCallback((obs) => {
+    for (const sa of snapshot.subagents) obs.observe(sa.cost, { subagent: sa.name })
   })
 
   // --- Realized savings (already avoided) -----------------------------------
