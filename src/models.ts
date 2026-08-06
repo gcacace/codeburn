@@ -593,6 +593,7 @@ function getCanonicalName(model: string): string {
     .replace(/@.*$/, '')       // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
     .replace(/-\d{8}$/, '')   // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
     .replace(/^[^/]+\//, '') // strip provider prefix: anthropic/foo -> foo
+    .replace(/\[[^\]]*\]$/, '') // strip context tag: Codex records Kimi as k3[1m], so kimi/k3[1m] -> k3
 }
 
 function stripKnownPricingVariantSuffix(model: string): string | null {
@@ -921,6 +922,27 @@ const SHORT_NAMES: Record<string, string> = {
   'glm-5p2': 'GLM-5.2',
   'qwen3p7-plus': 'Qwen 3.7 Plus',
   'kimi-k2p7-code': 'Kimi K2.7 Code',
+  // Ids that price correctly but had no display entry, so reports showed the
+  // raw slug. All display-only. The GPT-5.6 variants are listed individually
+  // rather than as a bare `gpt-5.6`: a base entry would swallow every future
+  // `gpt-5.6-*` via the prefix match and hide the variant, which is exactly
+  // what getShortModelName's version-boundary rule is there to prevent.
+  'gpt-5.6-sol': 'GPT-5.6 Sol',
+  'gpt-5.6-terra': 'GPT-5.6 Terra',
+  'gpt-5.6-luna': 'GPT-5.6 Luna',
+  // The Grok Build harness reports the model it runs (`grok-4.5`), so this is
+  // the model's own name; `grok-build*` ids still resolve to "Grok Build".
+  'grok-4.5': 'Grok 4.5',
+  // ClinePass routes models as `cline-pass/<slug>`; getShortModelName's path
+  // fallback strips the prefix and re-resolves the bare slug through this
+  // table, the same way it handles `accounts/fireworks/models/<slug>`.
+  'qwen3.7-max': 'Qwen 3.7 Max',
+  'mimo-v2.5-pro': 'MiMo v2.5 Pro',
+  // Both spellings occur in the wild: OpenRouter gap-filled keys are lowercase
+  // slugs while sessions report the capitalized name (see the case-insensitive
+  // pricing index above). SHORT_NAMES matching is case-sensitive, so map both.
+  'minimax-m3': 'MiniMax M3',
+  'MiniMax-M3': 'MiniMax M3',
 }
 
 // Sorted longest-first so more-specific prefixes match before shorter ones.

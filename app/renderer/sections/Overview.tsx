@@ -15,10 +15,12 @@ import { codeburn } from '../lib/ipc'
 import { contiguousDailyWindow, dataStartKey, formatChartDate, localDateKey, sliceDailyToPeriod, sliceDailyToRange } from '../lib/period'
 import type {
   ActReportJson,
+  CombinedUsage,
   DailyHistoryEntry,
   DateRange,
   MenubarPayload,
   Period,
+  Scope,
   YieldJsonReport,
 } from '../lib/types'
 
@@ -650,6 +652,23 @@ export function Overview({ period, provider }: { period: Period; provider: strin
   return <OverviewContent period={period} provider={provider} overview={overview} />
 }
 
+/** Combined-scope hero footer: a per-device cost breakdown plus a reachable/
+ *  total device count, mirroring the menubar's combined view. An unreachable
+ *  device (powered off, off-network) shows its error in place of a cost. */
+function CombinedDevices({ usage }: { usage: CombinedUsage }) {
+  return (
+    <div className="ov-combined-devices">
+      <div className="ov-combined-head">{usage.combined.reachableCount} of {usage.combined.deviceCount} devices</div>
+      {usage.perDevice.map(device => (
+        <div className={device.error ? 'ov-combined-row err' : 'ov-combined-row'} key={device.id}>
+          <span className="ov-combined-name">{device.local ? `${device.name} · this device` : device.name}</span>
+          <span className="ov-combined-val">{device.error ?? formatUsd(device.cost)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function OverviewContent({
   period,
   provider = 'all',
@@ -657,6 +676,7 @@ export function OverviewContent({
   overview,
   onNavigate,
   ready = true,
+  scope = 'local',
 }: {
   period: Period
   provider?: string
@@ -664,6 +684,7 @@ export function OverviewContent({
   overview: Polled<MenubarPayload>
   onNavigate?: (section: 'optimize' | 'sessions') => void
   ready?: boolean
+  scope?: Scope
 }) {
   // Gate secondary spawns on the app-level readiness (first overview resolved),
   // so the cold hydration runs once (via overview) rather than 3 parses at once
@@ -680,7 +701,14 @@ export function OverviewContent({
 
   const now = new Date()
   const rangeActive = !!range
-  const animateKey = `${period}|${provider}|${range?.from ?? ''}|${range?.to ?? ''}`
+  // Combined scope shows the paired-device aggregate in the hero KPIs, mirroring
+  // the menubar. Only the hero totals are aggregated; the detailed panels below
+  // (daily chart, models) stay local — the combined payload carries totals only.
+  const combined = scope === 'combined' ? data.combined : undefined
+  const heroCost = combined ? combined.combined.cost : data.current.cost
+  const heroCalls = combined ? combined.combined.calls : data.current.calls
+  const heroSessions = combined ? combined.combined.sessions : data.current.sessions
+  const animateKey = `${period}|${provider}|${range?.from ?? ''}|${range?.to ?? ''}|${scope}`
   const stats = deriveStats(data, now)
   const periodDaily = sliceDailyToPeriod(data.history.daily, period, now)
   // Daily chart: contiguous zero-filled calendar window. A custom range spans
@@ -715,15 +743,21 @@ export function OverviewContent({
       {error && <StaleBanner error={error} />}
       <div className="ov-card ov-hero-split" aria-label="Key performance indicators">
         <div className="ov-hero-main">
-          <div className="ov-hero-top"><span className="ov-label">{data.current.label}</span><span className="ov-streak"><b>{streakDays(data.history.daily, now)}</b>-day streak</span></div>
-          <CountUp value={data.current.cost} animateKey={animateKey} />
-          <div className="ov-hero-sub">{data.current.calls.toLocaleString('en-US')} calls · {data.current.sessions.toLocaleString('en-US')} sessions</div>
-          {saved > 0 && (
-            <div className="ov-saved-line"><span>Saved by applied fixes</span><strong>{formatUsd(saved)}</strong><small>across {applied} {applied === 1 ? 'fix' : 'fixes'}</small></div>
-          )}
-          {localSaved > 0 && (
-            <div className="ov-saved-line"><span>Saved via local models</span><strong>{formatUsd(localSaved)}</strong><small>local-model routing</small></div>
-          )}
+          <div className="ov-hero-top"><span className="ov-label">{combined ? `Combined · ${data.current.label}` : data.current.label}</span><span className="ov-streak"><b>{streakDays(data.history.daily, now)}</b>-day streak</span></div>
+          <CountUp value={heroCost} animateKey={animateKey} />
+          <div className="ov-hero-sub">{heroCalls.toLocaleString('en-US')} calls · {heroSessions.toLocaleString('en-US')} sessions</div>
+          {combined
+            ? <CombinedDevices usage={combined} />
+            : (
+              <>
+                {saved > 0 && (
+                  <div className="ov-saved-line"><span>Saved by applied fixes</span><strong>{formatUsd(saved)}</strong><small>across {applied} {applied === 1 ? 'fix' : 'fixes'}</small></div>
+                )}
+                {localSaved > 0 && (
+                  <div className="ov-saved-line"><span>Saved via local models</span><strong>{formatUsd(localSaved)}</strong><small>local-model routing</small></div>
+                )}
+              </>
+            )}
         </div>
         <ActivityHeatmap daily={data.history.daily} bare />
         <EfficiencyScorecard current={data.current} bare />

@@ -145,6 +145,17 @@ describe('Settings', () => {
     expect(localStorage.getItem('codeburn.dailyBudget')).toBeFalsy()
   })
 
+  it('reflects the current scope and reports a change through onScopeChange', async () => {
+    const user = userEvent.setup()
+    const onScopeChange = vi.fn()
+    render(<Settings period="month" scope="local" onScopeChange={onScopeChange} />)
+    const scope = screen.getByLabelText('Scope')
+    expect(scope).toHaveTextContent('Local')
+    await user.click(scope)
+    await user.click(screen.getByRole('option', { name: 'Combined' }))
+    expect(onScopeChange).toHaveBeenCalledWith('combined')
+  })
+
   it('lists providers from the real overview payload', async () => {
     const user = userEvent.setup()
     render(<Settings period="week" />)

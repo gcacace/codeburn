@@ -1,4 +1,7 @@
-node_modules/
+# No trailing slash: the slash form only ignores directories, so a
+# node_modules SYMLINK (common in linked worktrees) slips into git add -A.
+# One did exactly that in db018f7 and had to be removed again in c642787.
+node_modules
 dist/
 *.tgz
 

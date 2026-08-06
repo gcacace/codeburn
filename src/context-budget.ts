@@ -60,8 +60,13 @@ async function countMcpTools(projectPath?: string): Promise<number> {
 }
 
 async function countSkills(projectPath?: string): Promise<number> {
-  const dirs = [join(homedir(), '.claude', 'skills')]
-  if (projectPath) dirs.push(join(projectPath, '.claude', 'skills'))
+  // Dedupe by resolved path: when the project IS the home dir, the home and
+  // project skills dirs are the same directory, and counting both double-counts
+  // every skill (and inflates the context budget).
+  const dirs = [...new Set([
+    join(homedir(), '.claude', 'skills'),
+    ...(projectPath ? [join(projectPath, '.claude', 'skills')] : []),
+  ])]
 
   let count = 0
   for (const dir of dirs) {
@@ -91,7 +96,12 @@ async function scanMemoryFiles(projectPath?: string): Promise<Array<{ name: stri
     paths.push({ path: join(projectPath, 'CLAUDE.local.md'), name: 'CLAUDE.local.md' })
   }
 
+  // Dedupe by path so a project that IS the home dir does not read (and count)
+  // ~/.claude/CLAUDE.md twice.
+  const seenPaths = new Set<string>()
   for (const { path, name } of paths) {
+    if (seenPaths.has(path)) continue
+    seenPaths.add(path)
     if (!existsSync(path)) continue
     const content = await readSessionFile(path)
     if (content === null) continue

@@ -553,9 +553,17 @@ function buildJsonReport(projects: ProjectSummary[], period: string, periodKey: 
         if (turn.retries === 0) dailyMap[day].oneShotTurns += 1
       }
       for (const call of turn.assistantCalls) {
-        dailyMap[day].cost += call.costUSD
-        dailyMap[day].savings += call.savingsUSD ?? 0
-        dailyMap[day].calls += 1
+        // Cost/savings/calls bucket under each call's OWN day — the same
+        // per-call rule as the durable day set (day-aggregator.ts), so this
+        // fallback and durable.days never diverge on a midnight-straddling
+        // turn (issue #852). Turn counts/edit stats stay anchored on the
+        // turn's day above. An unparseable call timestamp falls back to the
+        // turn's day rather than producing a garbage date key.
+        const callDay = Number.isNaN(new Date(call.timestamp).getTime()) ? day : dateKey(call.timestamp)
+        if (!dailyMap[callDay]) { dailyMap[callDay] = { cost: 0, savings: 0, calls: 0, turns: 0, editTurns: 0, oneShotTurns: 0 } }
+        dailyMap[callDay].cost += call.costUSD
+        dailyMap[callDay].savings += call.savingsUSD ?? 0
+        dailyMap[callDay].calls += 1
       }
     }
   }
@@ -1028,6 +1036,7 @@ program
         cacheWriteTokens: durable.data.cacheWriteTokens,
         days: durable.days,
         carriedCostUSD: durable.carriedCostUSD,
+        unattributedCostUSD: durable.unattributedCostUSD,
       },
     }))
   })
@@ -2022,7 +2031,7 @@ program
     await loadPricing()
     const { range, label } = getDateRange(opts.period)
     if (opts.format === 'json') {
-      const { aggregateModelStats, buildCompareJson, renderCompareJson, scanSelfCorrections } = await import('./compare-stats.js')
+      const { aggregateModelStats, buildCompareJson, findModelStat, renderCompareJson, scanSelfCorrections } = await import('./compare-stats.js')
       const projects = await parseAllSessions(range, opts.provider)
       const models = aggregateModelStats(projects)
 
@@ -2045,8 +2054,8 @@ program
         process.stderr.write('codeburn compare: --model-a and --model-b must be provided together.\n')
         process.exit(1)
       }
-      const modelA = models.find(model => model.model === opts.modelA)
-      const modelB = models.find(model => model.model === opts.modelB)
+      const modelA = findModelStat(models, opts.modelA)
+      const modelB = findModelStat(models, opts.modelB)
       if (!modelA) {
         process.stderr.write(`codeburn compare: model not found: "${opts.modelA}".\n`)
         process.exit(1)
@@ -2058,7 +2067,13 @@ program
       process.stdout.write(renderCompareJson(buildCompareJson(projects, modelA, modelB, label, opts.provider)) + '\n')
       return
     }
-    await renderCompare(range, opts.provider)
+    if (opts.modelA || opts.modelB) {
+      if (!opts.modelA || !opts.modelB) {
+        process.stderr.write('codeburn compare: --model-a and --model-b must be provided together.\n')
+        process.exit(1)
+      }
+    }
+    await renderCompare(range, opts.provider, opts.modelA, opts.modelB)
   })
 
 program

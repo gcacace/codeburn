@@ -111,6 +111,26 @@ describe('kiro provider - chat file parsing', () => {
     expect(call.costUSD).toBeGreaterThan(0)
   })
 
+  it('estimates input tokens from the full prompt, not a 500-char slice (money-path)', async () => {
+    // Regression: parseChatFile estimated input tokens from pendingUserMessage
+    // (the last human turn sliced to 500 chars) while output summed every bot
+    // char, so a long prompt undercounted input tokens - and cost - severalfold.
+    const wsHash = 'f'.repeat(32)
+    const wsDir = join(tmpDir, wsHash)
+    await mkdir(wsDir, { recursive: true })
+    const chatPath = join(wsDir, 'long.chat')
+    const prompt = 'x'.repeat(2400) // 2400 chars / 4 = 600 tokens; a 500-slice would give 125
+    await writeFile(chatPath, makeChatFile({ userPrompt: prompt, botResponses: ['ok'] }))
+
+    const calls: ParsedProviderCall[] = []
+    for await (const call of kiro.createSessionParser({ path: chatPath, project: 'p', provider: 'kiro' }, new Set()).parse()) calls.push(call)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.inputTokens).toBe(600)
+    // userMessage stays capped for display; only the token estimate uses the full length.
+    expect(calls[0]!.userMessage.length).toBe(500)
+  })
+
   it('stores kiro-auto when model is auto', async () => {
     const wsHash = 'b'.repeat(32)
     const wsDir = join(tmpDir, wsHash)

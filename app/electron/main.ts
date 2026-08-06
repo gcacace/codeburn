@@ -165,6 +165,11 @@ function vConfigSource(source: string | null | undefined): string | null {
   if (!/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(source)) throw new CliError('bad-args', 'invalid claude config source')
   return source
 }
+function vScope(scope: string | undefined): 'local' | 'combined' {
+  if (scope === 'combined') return 'combined'
+  if (scope === undefined || scope === 'local') return 'local'
+  throw new CliError('bad-args', 'invalid scope')
+}
 function vOutPath(outPath: string): string {
   if (outPath.startsWith('-') || !path.isAbsolute(outPath)) throw new CliError('bad-args', 'export path must be absolute')
   return outPath
@@ -269,19 +274,28 @@ export function createBridgeHandlers(deps: Deps = { spawnCli, spawnCliAction, re
   // The desktop never renders the granular timeline, so it always passes
   // --no-timeline (skips buildGranularHistory on every poll). The Swift menubar
   // omits the flag and keeps the timeline unchanged.
-  const buildOverviewArgs = (period: string, provider: string, range?: DateRange, configSource?: string | null): string[] => [
-    'status', '--format', 'menubar-json', '--period', vPeriod(period), '--no-timeline',
-    ...providerArgs(vProvider(provider)), ...rangeArgs(vRange(range)), ...configSourceArgs(vConfigSource(configSource)),
-  ]
+  //
+  // Combined scope aggregates paired-device usage: the CLI rejects --scope
+  // combined alongside --provider/--project/--exclude (paired devices report
+  // unfiltered usage), so the provider filter is dropped in that mode. The
+  // caller (renderer) forces provider='all' when combined, so nothing is lost.
+  const buildOverviewArgs = (period: string, provider: string, range?: DateRange, configSource?: string | null, scope?: string): string[] => {
+    const vScopeValue = vScope(scope)
+    return [
+      'status', '--format', 'menubar-json', '--period', vPeriod(period), '--no-timeline',
+      ...(vScopeValue === 'combined' ? ['--scope', 'combined'] : providerArgs(vProvider(provider))),
+      ...rangeArgs(vRange(range)), ...configSourceArgs(vConfigSource(configSource)),
+    ]
+  }
 
   // `background` (renderer prefetch only) drops this fetch to background priority
   // so it yields the CLI's run slots to any interactive poll or click. Optional
   // and defaulting to interactive, so an older preload that omits it is unchanged.
-  const getOverview: Handler = async (period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean) => {
+  const getOverview: Handler = async (period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean, scope?: string) => {
     coldStartBegan ??= Date.now()
     const priority: SpawnPriority | undefined = background ? 'background' : undefined
     try {
-      const args = buildOverviewArgs(period, provider, range, configSource)
+      const args = buildOverviewArgs(period, provider, range, configSource, scope)
       if (overviewWarmed) return { ok: true, value: await deps.spawnCli(args, priority ? { priority } : undefined) }
       const value = await deps.spawnCli(args, {
         timeoutMs: WARMUP_TIMEOUT_MS,

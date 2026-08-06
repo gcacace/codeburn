@@ -40,9 +40,14 @@ describe('isProxiedPath: path matching rule', () => {
     expect(isProxiedPath('/Users/me/work/')).toBe(true)
   })
 
-  it('is case-insensitive (macOS/Windows default filesystems)', () => {
+  it('folds case exactly where the default filesystem does (macOS/Windows yes, Linux no)', () => {
+    // normalizeProxyPath lowercases only on darwin/win32, deliberately: ext4 is
+    // case-sensitive and folding there could credit unrelated spend. Assert the
+    // platform-correct behavior instead of hardcoding the macOS one, which made
+    // this case fail on Linux CI by design.
     setProxyPaths(['/Users/Me/Work'])
-    expect(isProxiedPath('/users/me/work/acme')).toBe(true)
+    const foldsCase = process.platform === 'darwin' || process.platform === 'win32'
+    expect(isProxiedPath('/users/me/work/acme')).toBe(foldsCase)
   })
 
   it('matches a Windows-style config against a forward-slash cwd', () => {

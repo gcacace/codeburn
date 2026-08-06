@@ -123,6 +123,36 @@ describe('getShortModelName', () => {
     expect(getShortModelName('accounts/fireworks/models/some-unlisted-slug')).toBe('some-unlisted-slug')
   })
 
+  it('names GPT-5.6 variants individually rather than collapsing them', () => {
+    expect(getShortModelName('gpt-5.6-sol')).toBe('GPT-5.6 Sol')
+    expect(getShortModelName('gpt-5.6-terra')).toBe('GPT-5.6 Terra')
+    expect(getShortModelName('gpt-5.6-luna')).toBe('GPT-5.6 Luna')
+    // No bare `gpt-5.6` entry exists, so an unlisted future variant must still
+    // fall through to its raw id rather than borrow a sibling's label.
+    expect(getShortModelName('gpt-5.6-unlisted')).toBe('gpt-5.6-unlisted')
+  })
+
+  it('names grok-4.5 without disturbing the Grok Build harness label', () => {
+    // The Grok Build CLI reports the model it runs, so the model id gets the
+    // model's name; ids that really are grok-build keep the harness label.
+    expect(getShortModelName('grok-4.5')).toBe('Grok 4.5')
+    expect(getShortModelName('grok-build-0.1')).toBe('Grok Build')
+  })
+
+  it('names ClinePass-routed slugs through the path fallback', () => {
+    // ClinePass ids arrive as `cline-pass/<slug>`; the path fallback strips the
+    // prefix and re-resolves the bare slug, as it does for Fireworks ids.
+    expect(getShortModelName('cline-pass/qwen3.7-max')).toBe('Qwen 3.7 Max')
+    expect(getShortModelName('cline-pass/minimax-m3')).toBe('MiniMax M3')
+    expect(getShortModelName('cline-pass/mimo-v2.5-pro')).toBe('MiMo v2.5 Pro')
+    expect(getShortModelName('cline-pass/kimi-k3')).toBe('Kimi K3')
+  })
+
+  it('names MiniMax M3 in both the lowercase-slug and capitalized spellings', () => {
+    expect(getShortModelName('minimax-m3')).toBe('MiniMax M3')
+    expect(getShortModelName('MiniMax-M3')).toBe('MiniMax M3')
+  })
+
   it('resolves Fireworks-hosted fleet models to friendly names via the path fallback', () => {
     // Real ids are the full Fireworks path `accounts/fireworks/models/<slug>`.
     expect(getShortModelName('accounts/fireworks/models/glm-5p2')).toBe('GLM-5.2')
@@ -212,6 +242,32 @@ describe('builtin aliases - getShortModelName', () => {
 
   it('anthropic/anthropic--claude-4.6-opus -> Opus 4.6', () => {
     expect(getShortModelName('anthropic/anthropic--claude-4.6-opus')).toBe('Opus 4.6')
+  })
+})
+
+// Codex driving a Kimi backend records the model as `kimi/k3[1m]` (provider
+// prefix + context-length tag). getCanonicalName strips the prefix but the
+// `[1m]` tag used to survive, so it matched no alias and priced to $0 - the
+// Kimi-via-codex spend was silently reported as free.
+describe('codex Kimi context-tag normalization (kimi/k3[1m])', () => {
+  it('prices kimi/k3[1m] the same as canonical kimi-k3 instead of $0', () => {
+    expect(getModelCosts('kimi/k3[1m]')).not.toBeNull()
+    expect(getModelCosts('kimi/k3[1m]')).toEqual(getModelCosts('kimi-k3'))
+    expect(calculateCost('kimi/k3[1m]', 1_000_000, 100_000, 0, 0, 0)).toBeGreaterThan(0)
+  })
+
+  it('resolves the bare k3[1m] tag too', () => {
+    expect(getModelCosts('k3[1m]')).toEqual(getModelCosts('kimi-k3'))
+  })
+
+  it('names kimi/k3[1m] as Kimi K3', () => {
+    expect(getShortModelName('kimi/k3[1m]')).toBe('Kimi K3')
+  })
+
+  it('does not strip a non-bracket suffix from an ordinary model id', () => {
+    expect(getShortModelName('gpt-5.5')).toBe('GPT-5.5')
+    expect(getModelCosts('gpt-5.5')).toEqual(getModelCosts('gpt-5.5'))
+    expect(calculateCost('gpt-5.5', 1_000_000, 100_000, 0, 0, 0)).toBeCloseTo(8, 5)
   })
 })
 

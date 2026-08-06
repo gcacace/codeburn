@@ -77,7 +77,7 @@ function DeviceView({ payload, isRemote, unit }: { payload?: Payload; isRemote: 
   const c = payload?.current
   // Cache cards read the period-scoped `current` totals, matching Cost/Calls/
   // Tokens. `history.daily` is the 365-day backfill that feeds the trend chart
-  // only; summing it here over-counted the cards for shorter periods (#583).
+  // only; summing it here over-counted the cards for shorter periods (issue 583).
   const cacheWrite = c?.cacheWriteTokens ?? 0
   const cacheRead = c?.cacheReadTokens ?? 0
   const toolBars: BarItem[] = c
@@ -290,7 +290,7 @@ function CombinedView({ devices, unit }: { devices: DeviceUsage[]; unit: Unit })
     if (!c) continue
     inTok += c.inputTokens
     outTok += c.outputTokens
-    // Period-scoped per device (was summing each device's 365-day backfill, #583).
+    // Period-scoped per device (was summing each device's 365-day backfill, issue 583).
     // `?? 0` mirrors DeviceView and guards the un-normalized bootstrap payload,
     // where an older peer may not carry these fields yet (avoids NaN).
     cacheWrite += c.cacheWriteTokens ?? 0
@@ -373,6 +373,42 @@ function CombinedView({ devices, unit }: { devices: DeviceUsage[]; unit: Unit })
         </Panel>
       </div>
     </>
+  )
+}
+
+// Theme toggle: mirrors the .dark class set by the index.html pre-paint script
+// and persists the choice to the same localStorage key.
+function ThemeToggle() {
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
+  const toggle = () => {
+    const next = !dark
+    setDark(next)
+    document.documentElement.classList.toggle('dark', next)
+    try {
+      localStorage.setItem('codeburn-theme', next ? 'dark' : 'light')
+    } catch {
+      // storage disabled (some embeds/webviews): persist nothing, OS theme wins next load
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-tertiary-foreground transition-colors hover:bg-interactive-secondary hover:text-foreground max-md:h-9 max-md:w-9 max-md:shrink-0"
+    >
+      {dark ? (
+        <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 8.53A6 6 0 1 1 7.47 2 4.67 4.67 0 0 0 14 8.53Z" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+          <circle cx="8" cy="8" r="3.1" />
+          <path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2" />
+        </svg>
+      )}
+    </button>
   )
 }
 
@@ -459,6 +495,25 @@ export function App() {
     if (provider !== 'all' && c0 && !providerOptions.includes(provider)) setProvider('all')
   }, [provider, providerOptions, c0])
 
+  // Follow the OS theme live while the user has no explicit preference, so
+  // flipping the system theme updates the dashboard without a reload.
+  useEffect(() => {
+    const mql = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => {
+      let saved: string | null = null
+      try {
+        saved = localStorage.getItem('codeburn-theme')
+      } catch {
+        // storage disabled: OS theme only
+      }
+      if (saved !== 'dark' && saved !== 'light') {
+        document.documentElement.classList.toggle('dark', mql.matches)
+      }
+    }
+    mql.addEventListener('change', apply)
+    return () => mql.removeEventListener('change', apply)
+  }, [])
+
   const showCombined = multi && view === 'all'
   const viewTitle = showCombined ? 'All devices' : (primary ? primary.name + (primary.local ? ' · this Mac' : '') : 'Loading…')
   const label = local?.payload?.current?.label ?? ''
@@ -466,7 +521,7 @@ export function App() {
   return (
     <div className="min-h-screen bg-outer-background p-2.5 max-md:min-h-[100dvh]">
       <div className="flex h-[calc(100vh-20px)] flex-col gap-2.5 max-md:h-[calc(100dvh-20px)]">
-        <header className="flex h-12 shrink-0 items-center gap-4 rounded-md border border-border bg-card px-5 shadow-[0_2px_8px_rgba(0,0,0,0.03)] max-md:gap-3 max-md:px-3">
+        <header className="flex h-12 shrink-0 items-center gap-4 rounded-md border border-border bg-card px-5 shadow-[0_2px_8px_rgba(0,0,0,0.03)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.5)] max-md:gap-3 max-md:px-3">
           <button
             type="button"
             onClick={() => setSidebarOpen(true)}
@@ -482,7 +537,7 @@ export function App() {
           <div className="flex items-center gap-2 max-md:shrink-0">
             <img src="/codeburn-logo.png" alt="CodeBurn" className="h-6 w-6" />
             <span className="text-lg font-semibold tracking-[-0.02em] text-foreground">
-              Code<span className="text-[#e8553a]">Burn</span>
+              Code<span className="text-brand">Burn</span>
             </span>
             <span className="ml-1 text-[11px] font-light uppercase tracking-[0.14em] text-tertiary-foreground max-sm:hidden">usage</span>
           </div>
@@ -550,6 +605,7 @@ export function App() {
             </select>
             </>
             )}
+            <ThemeToggle />
           </div>
         </header>
 
@@ -638,7 +694,7 @@ export function App() {
                       type="checkbox"
                       checked={shareInfo.always}
                       onChange={() => void toggleAlways()}
-                      className="h-3.5 w-3.5 accent-[#1f8a5b]"
+                      className="h-3.5 w-3.5 accent-primary"
                     />
                     Keep sharing always
                   </label>

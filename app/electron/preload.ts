@@ -20,7 +20,7 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 // renderer-side where `window.codeburn` is declared as CodeburnBridge.
 const bridge = {
   getQuota: (force?: boolean) => invoke('codeburn:getQuota', force),
-  getOverview: (period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean) => invoke('codeburn:getOverview', period, provider, range, configSource, background),
+  getOverview: (period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean, scope?: string) => invoke('codeburn:getOverview', period, provider, range, configSource, background, scope),
   getPlans: (period: string) => invoke('codeburn:getPlans', period),
   getActReport: () => invoke('codeburn:getActReport'),
   getModels: (period: string, provider: string, byTask: boolean, range?: DateRange) => invoke('codeburn:getModels', period, provider, byTask, range),

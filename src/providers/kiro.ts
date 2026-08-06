@@ -203,12 +203,20 @@ function parseChatFile(data: KiroChatFile, sessionId: string, project: string, s
   if (modelId === 'auto' || !modelId) modelId = 'kiro-auto'
 
   let pendingUserMessage = ''
+  // Accumulate every human turn's full length for the input-token estimate,
+  // mirroring the modern-execution path (which sums inputChars). The prior
+  // code estimated input tokens from pendingUserMessage.length alone - the
+  // LAST human turn truncated to 500 chars - so a multi-turn session, or any
+  // final prompt over 500 chars, undercounted input tokens (and therefore
+  // costUSD) severalfold, while output correctly summed all bot chars.
+  let inputChars = 0
   const allTools: string[] = []
   const toolSequence: ToolCall[][] = []
 
   for (const msg of chat) {
     if (msg.role === 'human') {
       if (msg.content.startsWith('<identity>')) continue
+      inputChars += msg.content.length
       pendingUserMessage = msg.content.slice(0, 500)
     }
     if (msg.role === 'bot') {
@@ -226,7 +234,7 @@ function parseChatFile(data: KiroChatFile, sessionId: string, project: string, s
   if (seenKeys.has(dedupKey)) return results
 
   const outputTokens = estimateTokensFromChars(totalOutputChars)
-  const inputTokens = estimateTokensFromChars(pendingUserMessage.length)
+  const inputTokens = estimateTokensFromChars(inputChars)
   const costUSD = calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
   const tsDate = parseKiroTimestamp(metadata.startTime)
   if (!tsDate) return results

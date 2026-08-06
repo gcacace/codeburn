@@ -27,7 +27,7 @@ import { Compare } from './sections/Compare'
 import { Plans } from './sections/Plans'
 import { Settings, type SettingsPane } from './sections/Settings'
 import { SpendContent } from './sections/Spend'
-import type { DateRange, MenubarPayload, ModelReportRow, Period, TelemetryStatus } from './lib/types'
+import type { DateRange, MenubarPayload, ModelReportRow, Period, Scope, TelemetryStatus } from './lib/types'
 
 // Bucket raw dollar amounts before they leave the machine: telemetry carries
 // coarse ranges, never exact spend.
@@ -130,8 +130,8 @@ const STANDARD_PERIODS: Period[] = ['today', 'week', '30days', 'month', 'all', '
 // Instant-switch memo key for an overview result. Shared by the overview poll
 // and the provider prefetcher so the two never drift out of sync. Exported so
 // the prefetch-storm test can assert warmed keys survive between polls.
-export function overviewMemoKey(provider: string, period: Period, range: DateRange | null, configSource: string | null): string {
-  return `overview|${provider}|${period}|${range?.from ?? ''}-${range?.to ?? ''}|${configSource ?? ''}`
+export function overviewMemoKey(provider: string, period: Period, range: DateRange | null, configSource: string | null, scope: Scope = 'local'): string {
+  return `overview|${provider}|${period}|${range?.from ?? ''}-${range?.to ?? ''}|${configSource ?? ''}|${scope}`
 }
 
 // Prefetch pacing: wait a short idle after the first paint, then warm one
@@ -170,6 +170,15 @@ function persistConfigSource(id: string | null): void {
     if (id) globalThis.localStorage?.setItem('codeburn.claudeConfigSource', id)
     else globalThis.localStorage?.removeItem('codeburn.claudeConfigSource')
   } catch { /* storage can be unavailable */ }
+}
+
+/** Boot scope = the persisted dashboard Scope setting, else local. */
+function initialScope(): Scope {
+  try { return globalThis.localStorage?.getItem('codeburn.scope') === 'combined' ? 'combined' : 'local' } catch { return 'local' }
+}
+
+function persistScope(scope: Scope): void {
+  try { globalThis.localStorage?.setItem('codeburn.scope', scope) } catch { /* storage can be unavailable */ }
 }
 
 function providerName(provider: string): string {
@@ -218,20 +227,27 @@ function AppMain() {
   const [detectedProviders, setDetectedProviders] = useState<Array<{ id: string; label: string }>>([])
   const [customRange, setCustomRange] = useState<DateRange | null>(null)
   const [claudeConfigSource, setClaudeConfigSource] = useState<string | null>(initialConfigSource)
+  const [scope, setScopeState] = useState<Scope>(initialScope)
   const [refreshToken, setRefreshToken] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [, setCurrencyTick] = useState(0)
 
   // Preserve the 2/3-arg call shapes when no config is scoped so the CLI argv
   // stays flag-free; only add --claude-config-source once a config is picked.
+  // Combined scope aggregates paired-device usage; the CLI rejects it alongside
+  // a provider/config filter, so onScopeChange forces provider='all' and clears
+  // the config scope before this poll runs. Passing scope='local' produces the
+  // same flag-free argv as before, so local users are unaffected.
   const overview = usePolled<MenubarPayload>(
-    () => claudeConfigSource
+    () => scope === 'combined'
+      ? codeburn.getOverview(period, 'all', customRange ?? undefined, undefined, undefined, 'combined')
+      : claudeConfigSource
       ? codeburn.getOverview(period, provider, customRange ?? undefined, claudeConfigSource)
       : customRange
       ? codeburn.getOverview(period, provider, customRange)
       : codeburn.getOverview(period, provider),
-    [period, provider, customRange?.from, customRange?.to, claudeConfigSource],
-    { memoKey: overviewMemoKey(provider, period, customRange, claudeConfigSource) },
+    [period, provider, customRange?.from, customRange?.to, claudeConfigSource, scope],
+    { memoKey: overviewMemoKey(provider, period, customRange, claudeConfigSource, scope) },
   )
   const refreshOverview = overview.refresh
 
@@ -273,7 +289,7 @@ function AppMain() {
   // fails we still emit the snapshot, just without the model x category cross.
   const snapshotDayRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!overview.data || provider !== 'all' || customRange || claudeConfigSource) return
+    if (!overview.data || provider !== 'all' || customRange || claudeConfigSource || scope !== 'local') return
     const today = localDateKey(new Date())
     if (snapshotDayRef.current === today) return
     snapshotDayRef.current = today
@@ -285,7 +301,7 @@ function AppMain() {
       } catch { /* degrade: emit the snapshot without per-model topCategory */ }
       trackEvent('usage_snapshot', usageSnapshotProps(payload, modelCategories))
     })()
-  }, [overview.data, provider, customRange, claudeConfigSource, period, trackEvent])
+  }, [overview.data, provider, customRange, claudeConfigSource, scope, period, trackEvent])
 
   useEffect(() => {
     let saved: string | null = null
@@ -360,7 +376,9 @@ function AppMain() {
   overviewBusyRef.current = overview.loading
   const warmedKeys = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!ready || overview.data == null || customRange || claudeConfigSource) return
+    // Combined scope has no provider picker to warm — it always shows unfiltered
+    // all-device usage — so the per-provider prefetch is local-scope only.
+    if (!ready || overview.data == null || customRange || claudeConfigSource || scope !== 'local') return
     const targets = detectedProviders.map(entry => entry.id).filter(id => id !== provider)
     if (targets.length === 0) return
     let cancelled = false
@@ -391,7 +409,7 @@ function AppMain() {
     // `overview.data == null` (a boolean) gates on first-resolution without
     // re-running every poll; the data content itself is intentionally not a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, period, provider, customRange, claudeConfigSource, detectedProviders, overview.data == null])
+  }, [ready, period, provider, customRange, claudeConfigSource, scope, detectedProviders, overview.data == null])
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000)
@@ -451,22 +469,40 @@ function AppMain() {
 
   // A Claude config scopes Claude usage only, so a non-Claude provider filter
   // would make the CLI reject the flag: reset it to 'all' first (a 'claude'
-  // filter is already compatible and is left alone).
+  // filter is already compatible and is left alone). Picking a config also
+  // implies a device-specific view, so drop combined scope back to local.
   const onConfigSelect = (id: string) => {
     const next = id || null
     if (next && provider !== 'all' && provider !== 'claude') setProvider('all')
+    if (next && scope === 'combined') { setScopeState('local'); persistScope('local') }
     setClaudeConfigSource(next)
     persistConfigSource(next)
   }
 
   // Symmetric direction: picking a non-Claude provider while a config is
-  // scoped would hit the same CLI rejection, so drop the config scope.
+  // scoped would hit the same CLI rejection, so drop the config scope. A
+  // specific provider filter is a device-specific view, so it also drops
+  // combined scope back to local (combined reports unfiltered usage).
   const onProviderSelect = (value: string) => {
+    if (value !== 'all' && scope === 'combined') { setScopeState('local'); persistScope('local') }
     if (claudeConfigSource && value !== 'all' && value !== 'claude') {
       setClaudeConfigSource(null)
       persistConfigSource(null)
     }
     setProvider(value)
+  }
+
+  // Combined scope reports unfiltered, all-provider usage across paired devices,
+  // so switching to it resets the provider filter and Claude-config scope (which
+  // the CLI would otherwise reject), mirroring the menubar's setMenubarScope.
+  const onScopeChange = (value: string) => {
+    const next: Scope = value === 'combined' ? 'combined' : 'local'
+    if (next === 'combined') {
+      if (provider !== 'all') setProvider('all')
+      if (claudeConfigSource) { setClaudeConfigSource(null); persistConfigSource(null) }
+    }
+    setScopeState(next)
+    persistScope(next)
   }
 
   const claudeConfigs = overview.data?.claudeConfigs
@@ -478,7 +514,11 @@ function AppMain() {
   const activeConfigLabel = claudeConfigSource
     ? claudeConfigs?.options.find(option => option.id === claudeConfigSource)?.label ?? null
     : null
-  const scope = `${customRange ? rangeLabel(customRange) : PERIOD_LABELS[period]} · ${providerLabel}${activeConfigLabel ? ` · ${activeConfigLabel}` : ''}`
+  // Combined scope reports unfiltered all-device usage, so the caption reads
+  // "Combined" in place of the (forced-'all') provider label.
+  const scopeCaption = scope === 'combined'
+    ? `${customRange ? rangeLabel(customRange) : PERIOD_LABELS[period]} · Combined`
+    : `${customRange ? rangeLabel(customRange) : PERIOD_LABELS[period]} · ${providerLabel}${activeConfigLabel ? ` · ${activeConfigLabel}` : ''}`
 
   return (
     <Window>
@@ -494,12 +534,12 @@ function AppMain() {
         {section === 'plans' ? (
           <Plans period={period} refreshToken={refreshToken} onNavigate={navigate} ready={ready} />
         ) : section === 'settings' ? (
-          <Settings period={period} refreshToken={refreshToken} onNavigate={navigate} initialPane={settingsPane} claudeConfigs={claudeConfigs} claudeConfigSource={claudeConfigSource} onConfigMutated={onConfigMutated} />
+          <Settings period={period} refreshToken={refreshToken} onNavigate={navigate} initialPane={settingsPane} claudeConfigs={claudeConfigs} claudeConfigSource={claudeConfigSource} onConfigMutated={onConfigMutated} scope={scope} onScopeChange={onScopeChange} />
         ) : (
           <>
             <TopBar
               title={SECTION_TITLES[section]}
-              scope={scope}
+              scope={scopeCaption}
               period={period}
               onPeriodChange={onPeriodChange}
               customRange={customRange}
@@ -514,7 +554,7 @@ function AppMain() {
             />
             <div className={motionClass('body', 'section-fade')}>
               {section === 'overview' ? (
-                <OverviewContent period={period} provider={provider} range={customRange} overview={overview} onNavigate={navigate} ready={ready} />
+                <OverviewContent period={period} provider={provider} range={customRange} overview={overview} onNavigate={navigate} ready={ready} scope={scope} />
               ) : section === 'sessions' ? (
                 <Sessions period={period} provider={provider} range={customRange} refreshToken={refreshToken} detectedProviders={detectedProviders} onProviderChange={onProviderSelect} ready={ready} />
               ) : section === 'pullRequests' ? (

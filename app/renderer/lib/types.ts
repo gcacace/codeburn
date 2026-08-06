@@ -6,6 +6,10 @@
 
 export type Period = 'today' | 'week' | '30days' | 'month' | 'all' | 'lifetime'
 
+// Dashboard usage scope: this device only ('local') or the aggregate across
+// every paired device ('combined'). Mirrors the macOS menubar's Scope setting.
+export type Scope = 'local' | 'combined'
+
 export type DateRange = { from: string; to: string }
 
 export type CliErrorKind = 'not-found' | 'nonzero' | 'bad-json' | 'timeout' | 'too-large' | 'bad-args'
@@ -637,7 +641,9 @@ export interface CodeburnBridge {
   getQuota(force?: boolean): Promise<QuotaProvider[]>
   // `background` (prefetch only) requests background CLI-spawn priority; optional
   // so an older preload that ignores it degrades to interactive priority.
-  getOverview(period: Period, provider: string, range?: DateRange, configSource?: string | null, background?: boolean): Promise<MenubarPayload>
+  // `scope` selects local-device usage ('local', default) or paired-device
+  // aggregate ('combined'); optional so an older preload degrades to local.
+  getOverview(period: Period, provider: string, range?: DateRange, configSource?: string | null, background?: boolean, scope?: string): Promise<MenubarPayload>
   getPlans(period: Period): Promise<StatusJson>
   getActReport(): Promise<ActReportJson>
   readonly platform: string

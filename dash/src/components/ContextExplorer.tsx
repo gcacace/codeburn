@@ -106,7 +106,7 @@ function SessionDetails({ provider, id }: { provider: ContextProvider; id: strin
             <span className="tabular-nums">{pct}%</span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-interactive-secondary">
-            <div className={cn('h-full rounded-full', pct >= 80 ? 'bg-[#c8541f]' : 'bg-primary')} style={{ width: `${pct}%` }} />
+            <div className={cn('h-full rounded-full', pct >= 80 ? 'bg-chart-5' : 'bg-primary')} style={{ width: `${pct}%` }} />
           </div>
         </div>
       )}

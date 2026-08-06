@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'fs/promises'
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { createRequire } from 'node:module'
@@ -430,6 +430,47 @@ skipUnlessSqlite('hermes provider', () => {
     const modelTokens = sessions.flatMap(session => Object.values(session.modelBreakdown).map(model => model.tokens))
     expect(modelTokens.reduce((sum, tokens) => sum + tokens.outputTokens, 0)).toBe(90)
     expect(modelTokens.reduce((sum, tokens) => sum + tokens.reasoningTokens, 0)).toBe(22)
+  })
+
+  // Regression for issue #913: Hermes writes state.db in WAL mode and keeps
+  // the writer connection open for the life of the agent, so recent sessions
+  // live in state.db-wal while the main file's mtime stays at the last
+  // checkpoint. The date-range mtime pre-filter in parseProviderSources
+  // then reads the source as "older than the range" and skips it, and every
+  // session committed since the last checkpoint disappears from reports.
+  // The fingerprint must fold the -wal sibling in so a stale main-file stat
+  // cannot hide fresh sessions.
+  it('still parses sessions committed to the WAL when the main db stat is checkpoint-stale', async () => {
+    const dbPath = createHermesDb(tmpDir)
+    withTestDb(dbPath, (db) => {
+      insertSession(db, {
+        id: 'wal-session',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        startedAt: 1779549200,
+        title: 'WAL Session',
+      })
+      db.prepare('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)')
+        .run('wal-session', 'user', 'Session committed after the last checkpoint', 1779549201)
+    })
+
+    // Simulate the WAL-mode stat shape: the main file's mtime predates the
+    // requested range (last checkpoint days ago), while a fresh -wal sibling
+    // holds the recent commits. The db itself was written in rollback-journal
+    // mode, so SQLite ignores the stray -wal on open; only its stat matters.
+    const beforeRange = new Date('2026-05-20T00:00:00.000Z')
+    await utimes(dbPath, beforeRange, beforeRange)
+    await writeFile(`${dbPath}-wal`, 'wal-frames')
+
+    const { clearSessionCache, parseAllSessions } = await loadParserWithHermesHome(tmpDir, cacheDir)
+    clearSessionCache()
+    const projects = await parseAllSessions(dayRange(), 'hermes')
+    const sessions = projects.flatMap(project => project.sessions)
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.totalInputTokens).toBe(100)
   })
 
   it('treats sibling profile-like directories as default sessions', async () => {

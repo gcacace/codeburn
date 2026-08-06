@@ -17,7 +17,7 @@ vi.stubGlobal('localStorage', {
 })
 
 const mocks = vi.hoisted(() => ({
-  getOverview: vi.fn<(period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean) => Promise<MenubarPayload>>(),
+  getOverview: vi.fn<(period: string, provider: string, range?: DateRange, configSource?: string | null, background?: boolean, scope?: string) => Promise<MenubarPayload>>(),
   getSpendFlow: vi.fn<(period: string, provider: string, range?: DateRange) => Promise<SpendFlow>>(),
   getOptimizeReport: vi.fn<(period: string, provider: string, range?: DateRange) => Promise<OptimizeJsonReport>>(),
   getModels: vi.fn(),
@@ -271,6 +271,25 @@ describe('App shortcuts', () => {
       expect(mocks.getOverview).toHaveBeenCalledWith('today', 'claude')
       expect(mocks.getSpendFlow).toHaveBeenCalledWith('today', 'claude')
     })
+  })
+
+  it('drives combined-scope overview fetches and persists the Scope setting', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getOverview).toHaveBeenCalledWith('30days', 'all'))
+
+    fireEvent.keyDown(document, { key: ',', metaKey: true })
+    fireEvent.click(await screen.findByLabelText('Scope'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Combined' }))
+
+    // Combined scope forces provider='all' and passes --scope combined (6th arg).
+    await waitFor(() => expect(mocks.getOverview).toHaveBeenCalledWith('30days', 'all', undefined, undefined, undefined, 'combined'))
+    expect(localStorage.getItem('codeburn.scope')).toBe('combined')
+  })
+
+  it('boots in combined scope from the persisted Scope setting', async () => {
+    localStorage.setItem('codeburn.scope', 'combined')
+    render(<App />)
+    await waitFor(() => expect(mocks.getOverview).toHaveBeenCalledWith('30days', 'all', undefined, undefined, undefined, 'combined'))
   })
 
   it('builds the provider picker from providerDetails so display-name providers round-trip their internal id', async () => {

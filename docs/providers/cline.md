@@ -2,18 +2,20 @@
 
 Cline VS Code extension and Cline home-data task storage.
 
+Sessions from the Cline **command-line** agent use an unrelated layout and are handled by [Cline CLI](cline-cli.md); this provider does not see them.
+
 - **Source:** `src/providers/cline.ts`
 - **Loading:** eager (`src/providers/index.ts:2`)
 - **Test:** `tests/providers/cline.test.ts`
 
 ## Where it reads from
 
-Two task roots are scanned:
+These task roots are scanned:
 
-1. VS Code extension globalStorage for `saoudrizwan.claude-dev`.
+1. VS Code extension globalStorage for `saoudrizwan.claude-dev`, in every supported VS Code variant: stable (`Code`), Insiders (`Code - Insiders`), and VSCodium. The per-platform paths come from `getVSCodeGlobalStoragePaths` in `src/providers/vscode-cline-parser.ts`, the same helper Roo Code and KiloCode use.
 2. Cline's home-data root at `~/.cline/data`.
 
-Both roots are expected to contain a `tasks/` child directory. Discovery is delegated to `discoverClineTasks` in `src/providers/vscode-cline-parser.ts`, so a task is only included when it has a `ui_messages.json` file.
+Every root is expected to contain a `tasks/` child directory. Discovery is delegated to `discoverClineTasks` in `src/providers/vscode-cline-parser.ts`, so a task is only included when it has a `ui_messages.json` file.
 
 ## Storage format
 
@@ -35,12 +37,13 @@ None at the provider level; delegates to the shared helper and normal parser/cac
 
 ## Deduplication
 
-Discovery deduplicates by task id across the two Cline roots so a migrated task is not scanned twice. If the same task id exists in multiple roots, the one with the newest `ui_messages.json` wins. Parsing still uses the shared per-call key: `<providerName>:<taskId>:<index>`.
+Discovery deduplicates by task id across all Cline roots so a task that exists in more than one root (a migration, or the same extension storage seen by two VS Code variants) is not scanned twice. If the same task id exists in multiple roots, the one with the newest `ui_messages.json` wins. Parsing still uses the shared per-call key: `<providerName>:<taskId>:<index>`.
 
 ## Quirks
 
 - This provider is intentionally a thin wrapper over the shared Cline-family parser.
 - Cline can keep data in both VS Code globalStorage and `~/.cline/data`, depending on version and workflow.
+- A user can run Cline in VS Code stable, Insiders, and VSCodium at the same time; each variant has its own globalStorage tree, so all of them must be scanned.
 - If Cline changes the JSON shape, fix `vscode-cline-parser.ts` only if Roo Code and KiloCode still pass. Branch provider-specific parsing rather than duplicating the whole parser.
 
 ## When fixing a bug here

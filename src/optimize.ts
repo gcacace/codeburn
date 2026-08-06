@@ -2965,9 +2965,23 @@ export function computeInputCostRate(projects: ProjectSummary[]): number {
 type CacheEntry = { data: OptimizeResult; ts: number }
 const resultCache = new Map<string, CacheEntry>()
 
-function cacheKey(projects: ProjectSummary[], dateRange: DateRange | undefined): string {
+export function cacheKey(projects: ProjectSummary[], dateRange: DateRange | undefined): string {
   const dr = dateRange ? `${dateRange.start.getTime()}-${dateRange.end.getTime()}` : 'all'
-  const fingerprint = projects.length + ':' + projects.reduce((s, p) => s + p.totalApiCalls, 0)
+  // Fingerprint enough of the dataset that two materially different inputs
+  // cannot collide onto one cached OptimizeResult. Project count + api-call
+  // sum alone collided any two datasets sharing those two numbers, and served
+  // stale findings when cost/tokens moved (e.g. a re-price) while call count
+  // held - reachable in the long-lived menubar process within the 60s TTL.
+  // Cost is scaled to whole micro-dollars so float jitter cannot thrash the key.
+  let calls = 0, cost = 0, savings = 0, proxied = 0
+  for (const p of projects) {
+    calls += p.totalApiCalls
+    cost += p.totalCostUSD
+    savings += p.totalSavingsUSD
+    proxied += p.totalProxiedCostUSD
+  }
+  // Costs scaled to whole micro-dollars so float jitter cannot thrash the key.
+  const fingerprint = `${projects.length}:${calls}:${Math.round(cost * 1e6)}:${Math.round(savings * 1e6)}:${Math.round(proxied * 1e6)}`
   return `${dr}:${fingerprint}`
 }
 

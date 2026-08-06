@@ -185,12 +185,30 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
   }
 }
 
+// Validation is STRUCTURAL, never string-matching on `payload.originator`.
+// `originator` is a free-form CLIENT IDENTITY string, not a format marker: any
+// tool driving `codex app-server` writes structurally identical rollouts under
+// ~/.codex/sessions with its own value ("codex-tui", "Codex Desktop",
+// "t3code_desktop", "JetBrains.IntelliJ IDEA", ...). Gating on the spelling
+// silently dropped every third-party frontend and needed a new allowlist entry
+// per client (issues #626, #873).
+//
+// A `session_meta` first line with a well-formed payload object is signal
+// enough: the walker only visits `rollout-*.jsonl` under the strict
+// YYYY/MM/DD path or `archived_sessions/`, and codex.ts is the only provider
+// that reads ~/.codex, so directory ownership — not originator content —
+// decides the provider. Genuinely foreign files (wrong entry type, missing or
+// non-object payload, malformed JSON) are still rejected.
 async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; meta?: CodexEntry }> {
   const entry = await readFirstLine(filePath)
   if (!entry) return { valid: false }
+  // `entry` comes from an unchecked JSON.parse cast, so re-check the payload
+  // shape at runtime instead of trusting the declared type.
+  const payload: unknown = entry.payload
   const valid = entry.type === 'session_meta' &&
-    typeof entry.payload?.originator === 'string' &&
-    entry.payload.originator.toLowerCase().startsWith('codex')
+    typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload)
   return { valid, meta: valid ? entry : undefined }
 }
 
@@ -471,7 +489,13 @@ async function discoverSessionFile(filePath: string): Promise<SessionSource | nu
   const { valid, meta } = await isValidCodexSession(filePath)
   if (!valid || !meta) return null
 
-  const cwd = meta.payload?.cwd ?? 'unknown'
+  // Same unchecked-cast caveat as the payload check above: `cwd` is declared
+  // `string` but comes straight off JSON.parse. A rollout carrying a number,
+  // object or array here would throw out of sanitizeProject, escape
+  // discoverSessions, and make safeDiscoverSessions return [] for the WHOLE
+  // codex provider — every Codex report reading zero because of one bad file.
+  const rawCwd: unknown = meta.payload?.cwd
+  const cwd = typeof rawCwd === 'string' && rawCwd ? rawCwd : 'unknown'
   return { path: filePath, project: sanitizeProject(cwd), provider: 'codex' }
 }
 
@@ -530,12 +554,19 @@ async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]>
   return sources
 }
 
+// The model fields come off an unchecked JSON.parse cast, so a third-party
+// rollout can carry a non-string `model`. It flows straight into calculateCost,
+// which calls `.replace()` on it, so pick the first genuine string and never let
+// a number/object/array through.
+function firstModelString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value) return value
+  }
+  return undefined
+}
+
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return info?.model
-    ?? info?.info?.model
-    ?? info?.info?.model_name
-    ?? sessionModel
-    ?? 'gpt-5'
+  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'gpt-5'
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -607,16 +638,26 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 
         if (entry.type === 'session_meta') {
           sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
-          sessionCwd = entry.payload?.cwd ?? sessionCwd
+          // Guarded for the same reason as discoverSessionFile: parseCodexLine
+          // hands back an unchecked JSON.parse cast, and a non-string cwd would
+          // ride into projectPath/workingDirectory where the parser's path
+          // helpers (normalizeProjectPathKey, resolveCanonicalProjectPath) call
+          // string methods on it.
+          const rawSessionCwd: unknown = entry.payload?.cwd
+          if (typeof rawSessionCwd === 'string' && rawSessionCwd) sessionCwd = rawSessionCwd
           forkedFromId = entry.payload?.forked_from_id ?? ''
           if (forkedFromId && entry.timestamp) {
-            forkCutoff = new Date(new Date(entry.timestamp).getTime() + 5000).toISOString()
+            // An unparseable timestamp (a garbage string, or a non-string from
+            // the unchecked JSON.parse cast) makes `new Date(NaN).toISOString()`
+            // throw RangeError, which would sink this whole session to zero.
+            const forkBaseMs = new Date(entry.timestamp).getTime()
+            if (Number.isFinite(forkBaseMs)) forkCutoff = new Date(forkBaseMs + 5000).toISOString()
           }
-          sessionModel = entry.payload?.model ?? sessionModel
+          if (typeof entry.payload?.model === 'string') sessionModel = entry.payload.model
           continue
         }
 
-        if (entry.type === 'turn_context' && entry.payload?.model) {
+        if (entry.type === 'turn_context' && typeof entry.payload?.model === 'string') {
           sessionModel = entry.payload.model
           continue
         }

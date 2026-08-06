@@ -520,6 +520,49 @@ describe('Overview', () => {
     expect(screen.queryByText('Saved to date')).not.toBeInTheDocument()
   })
 
+  it('shows paired-device aggregate totals in the hero under combined scope', async () => {
+    const now = new Date()
+    const payload = makePayload(now)
+    // Local device: $312.40 / 4200 calls / 88 sessions (from makePayload).
+    // Combined swaps the hero to the cross-device aggregate and lists devices.
+    payload.combined = {
+      perDevice: [
+        { id: 'local', name: 'laptop', local: true, cost: 312.4, calls: 4200, sessions: 88, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, totalTokens: 0 },
+        { id: 'fp-workstation', name: 'workstation', local: false, cost: 187.6, calls: 2100, sessions: 40, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, totalTokens: 0 },
+      ],
+      combined: { cost: 500, calls: 6300, sessions: 128, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, totalTokens: 0, deviceCount: 2, reachableCount: 2 },
+    }
+
+    const { container } = render(<OverviewContent period="30days" provider="all" overview={polled(payload)} scope="combined" />)
+
+    const kpis = container.querySelector('.ov-hero-main') as HTMLElement
+    // Hero cost is the combined $500, not the local $312.40.
+    expect(within(kpis).getByText('$500.00')).toBeInTheDocument()
+    expect(within(kpis).getByText(/6,300 calls · 128 sessions/)).toBeInTheDocument()
+    expect(within(kpis).getByText('Combined · Last 30 days')).toBeInTheDocument()
+    expect(within(kpis).getByText('2 of 2 devices')).toBeInTheDocument()
+    expect(within(kpis).getByText('workstation')).toBeInTheDocument()
+    expect(within(kpis).getByText('laptop · this device')).toBeInTheDocument()
+    // Combined mode hides the local savings lines (they are device-specific).
+    expect(within(kpis).queryByText('Saved via local models')).not.toBeInTheDocument()
+  })
+
+  it('keeps local hero totals when scope is local even if a combined payload is present', async () => {
+    const now = new Date()
+    const payload = makePayload(now)
+    payload.combined = {
+      perDevice: [],
+      combined: { cost: 999, calls: 1, sessions: 1, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, totalTokens: 0, deviceCount: 2, reachableCount: 2 },
+    }
+
+    const { container } = render(<OverviewContent period="30days" provider="all" overview={polled(payload)} scope="local" />)
+
+    const kpis = container.querySelector('.ov-hero-main') as HTMLElement
+    expect(within(kpis).getByText('$312.40')).toBeInTheDocument()
+    expect(within(kpis).queryByText('$999.00')).not.toBeInTheDocument()
+    expect(within(kpis).queryByText(/devices/)).not.toBeInTheDocument()
+  })
+
   it('shows a stale banner when last-good data is present but the latest poll failed', async () => {
     const now = new Date()
     const overview: Polled<MenubarPayload> = {

@@ -2,13 +2,27 @@
 
 ## Unreleased
 
+### Added
+- **Credit-metered ChatGPT workspaces (Business / Edu / Enterprise) now show their limit.** These plans report no rate-limit windows, so the admin-set monthly allowance from `spend_control.individual_limit` is shown as a "Monthly usage limit" bar in the desktop app and the menubar. (#833)
+- **Combined-device scope in the desktop Dashboard**, mirroring the menu bar. A Local / Combined toggle aggregates paired-device usage in the Overview hero and the menu bar badge, degrading gracefully to the local figure when a peer is unreachable; the badge then shows a dimmed `reachable/total` marker so a momentary drop to the local number reads as "a peer is unreachable" rather than a glitch. (#866, #867, thanks @marcreynolds)
+
 ### Added (CLI)
+- **Cline CLI provider.** The Cline command-line agent (npm `cline`, 3.x) stores sessions as `~/.cline/data/sessions/<id>/<id>.json` + `<id>.messages.json`, a layout the existing Cline provider never scanned — it requires `tasks/<id>/ui_messages.json` — so every CLI session was silently reported as $0.00, with no warning even under `--verbose`. Added as its own `cline-cli` provider so the shared Cline-family parser (Roo Code, KiloCode, IBM Bob) is untouched; it mirrors the CLI's own root resolution (`CLINE_SESSION_DATA_DIR` → `CLINE_DATA_DIR` → `CLINE_DIR` → `~/.cline`) and reports its probed root through `codeburn doctor`. Per-message cost is metered by the CLI, so `cline-cli` joins the reported-cost pass-through allowlist rather than being re-priced from tokens. (#874)
 - **Codex throughput tracking**: per-model Tok/s in the dashboard and report, active time excludes tool wait. (#805, thanks @ihearttokyo)
+- `codeburn sync push --attribution` (opt-in): sends git attribution spans — the session→commit correlation from `codeburn yield` (`codeburn.session.attribution` and `codeburn.commit` span types with normalized repo remote, commit SHAs, merged/reverted state, and PR links). Nothing new is sent without the flag; local-only repos and Windows filesystem paths are never emitted as repo identities, and sessions whose project path no longer resolves never inherit the push-time working directory's repo. See docs/sync/README.md "Git attribution".
 
 ### Fixed (CLI)
+- **`--project` / `--exclude` now apply to the headline totals, not just the detail panels.** The durable headline unions the carry-forward daily cache with today's live parse, and the cached days were sliced to the requested provider but never to the requested project — so the Overview panel counted excluded projects while By Project / By Activity / By Model (built from the name-filtered parse) left them out, and the two could not be reconciled. Cost, calls, sessions and savings are now sliced out of the per-project day stats the cache has carried since v15. Tokens, models and categories have no per-project split in the cache, so under a project filter they come from the (project-filtered) live parse instead; cached days — or provider slices — carried from before v15 have no project split at all, so they cannot be attributed to a filtered project, and the terminal overview now states how much was set aside rather than folding it into the total. (#864)
 - **Codex parser corrections**: fork-replay no longer double-counts `patch_apply_end` and `mcp_tool_call_end`; `exec` is normalized to Bash; `custom_tool_call` events are handled; token_count lines larger than 32 KiB now parse exact token counts instead of estimating. Codex session cache bumps from v7 to v8 for a one-time re-parse. Only tool attribution changes for ordinary sessions, leaving their cost identical; sessions that logged an oversized token_count line are repriced from exact counts instead of an estimate. (#805)
+
+- **Midnight-straddling turns keep both halves.** A turn whose calls span local midnight was attributed whole to its start day, so `codeburn today` under-reported until the turn ended and multi-day totals mis-split it. Calls are now range-filtered inside the turn so each day gets the calls that belong to it, and By Activity and the daily turn counts reconcile with the headline. (#853, thanks @KENSHI601)
+- **`--provider <x>` no longer leaks Claude spend into the detail panels.** A provider-filtered run still ran the Claude scan, whose orphan pass re-injected every cached Claude session, so By Project / By Model / By Activity showed Claude usage under, e.g., `--provider cursor` while the headline was correct. (#872, thanks @ozymandiashh)
+- **A degraded session parse no longer freezes daily history.** A read-only parse that served a stale or missing session file was treated as complete and finalized days it never covered, freezing warm-cache ingestion; a corrupt refresh lock is now recovered rather than ending ingestion, and a legitimately idle tail is no longer re-derived on every launch. (#856, thanks @avs-io)
+- **Pi / Oh My Pi transcripts with a leading title record are discovered.** OMP writes a `type: "title"` line before the session header; discovery now scans a bounded number of leading lines for the first session record instead of requiring it on the first physical line. (#846, #859, thanks @jbspeakr, @avs-io)
+
 ### Fixed
 - Claude Desktop and Cowork sessions are discovered for Windows Microsoft Store (MSIX) installs. (#611)
+- Cline tasks are discovered in every VS Code variant (VS Code, VS Code Insiders, VSCodium), not just stable VS Code. (#874)
 
 ## 0.9.19 - 2026-07-20
 

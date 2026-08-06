@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readFile, rm, writeFile, mkdir } from 'fs/promises'
+import { readFile, rm, utimes, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, join } from 'path'
@@ -336,6 +336,78 @@ describe('fingerprintFile', () => {
     const fp = await fingerprintFile(`${filePath}#cursor-ws=ws:extra-colon`)
     expect(fp).not.toBeNull()
     expect(fp!.sizeBytes).toBe(9)
+  })
+
+  // SQLite WAL mode parks committed writes in `<db>-wal`; the main file's
+  // stat only moves on checkpoint, which a long-lived writer defers for
+  // hours. A fingerprint from the main file alone reports data older than
+  // what is really committed (issue #913). The WAL sibling must be folded in.
+  it('folds -wal sibling into a # compound fingerprint (Hermes session)', async () => {
+    await mkdir(TMP_DIR, { recursive: true })
+    const dbPath = join(TMP_DIR, 'state.db')
+    await writeFile(dbPath, 'main-db')
+    const past = new Date(Date.now() - 48 * 3600 * 1000)
+    await utimes(dbPath, past, past)
+    await writeFile(`${dbPath}-wal`, 'wal-frames')
+
+    const fp = await fingerprintFile(`${dbPath}#hermes-session=abc`)
+    expect(fp).not.toBeNull()
+    // mtime: the fresh WAL wins over the checkpoint-stale main file.
+    expect(fp!.mtimeMs).toBeGreaterThan(past.getTime() + 3600 * 1000)
+    // size: main + wal, so WAL growth alone changes the fingerprint.
+    expect(fp!.sizeBytes).toBe('main-db'.length + 'wal-frames'.length)
+  })
+
+  it('folds -wal sibling into a : compound fingerprint (OpenCode session)', async () => {
+    await mkdir(TMP_DIR, { recursive: true })
+    const dbPath = join(TMP_DIR, 'opencode.db')
+    await writeFile(dbPath, 'oc-db')
+    const past = new Date(Date.now() - 48 * 3600 * 1000)
+    await utimes(dbPath, past, past)
+    await writeFile(`${dbPath}-wal`, 'oc-wal')
+
+    const fp = await fingerprintFile(`${dbPath}:ses_abc123`)
+    expect(fp).not.toBeNull()
+    expect(fp!.mtimeMs).toBeGreaterThan(past.getTime() + 3600 * 1000)
+    expect(fp!.sizeBytes).toBe('oc-db'.length + 'oc-wal'.length)
+  })
+
+  it('folds -wal sibling into a bare SQLite path (copilot agent-traces.db)', async () => {
+    await mkdir(TMP_DIR, { recursive: true })
+    const dbPath = join(TMP_DIR, 'agent-traces.db')
+    await writeFile(dbPath, 'traces')
+    const past = new Date(Date.now() - 48 * 3600 * 1000)
+    await utimes(dbPath, past, past)
+    await writeFile(`${dbPath}-wal`, 'traces-wal')
+
+    const fp = await fingerprintFile(dbPath)
+    expect(fp).not.toBeNull()
+    expect(fp!.mtimeMs).toBeGreaterThan(past.getTime() + 3600 * 1000)
+    expect(fp!.sizeBytes).toBe('traces'.length + 'traces-wal'.length)
+  })
+
+  it('keeps compound fingerprints working when no -wal sibling exists', async () => {
+    await mkdir(TMP_DIR, { recursive: true })
+    const dbPath = join(TMP_DIR, 'state.db')
+    await writeFile(dbPath, 'main-only')
+
+    const fp = await fingerprintFile(`${dbPath}#hermes-session=abc`)
+    expect(fp).not.toBeNull()
+    expect(fp!.sizeBytes).toBe('main-only'.length)
+  })
+
+  it('does not fold sibling files into non-SQLite fingerprints', async () => {
+    await mkdir(TMP_DIR, { recursive: true })
+    const filePath = join(TMP_DIR, 'session.jsonl')
+    await writeFile(filePath, 'jsonl-data')
+    // A stray neighbor that happens to match the -wal naming must not leak
+    // into a transcript fingerprint (offset-based append detection relies on
+    // sizeBytes being the transcript's real byte length).
+    await writeFile(`${filePath}-wal`, 'stray')
+
+    const fp = await fingerprintFile(filePath)
+    expect(fp).not.toBeNull()
+    expect(fp!.sizeBytes).toBe('jsonl-data'.length)
   })
 })
 

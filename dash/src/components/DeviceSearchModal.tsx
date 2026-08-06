@@ -115,7 +115,7 @@ export function DeviceSearchModal({ onClose, onPaired }: { onClose: () => void; 
           )}
 
           {status && <p className="mt-3 text-xs text-tertiary-foreground">{status}</p>}
-          {error && <p className="mt-3 text-xs text-[#b5403a]">{error}</p>}
+          {error && <p className="mt-3 text-xs text-chart-8">{error}</p>}
         </div>
       </div>
     </div>

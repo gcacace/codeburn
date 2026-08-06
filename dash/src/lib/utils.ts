@@ -36,11 +36,11 @@ export function compactUsd(n: number): string {
   return sign + '$' + Math.round(a)
 }
 
-// Forest green -> gold -> terracotta ramp for stacked series (mirrors the
-// --chart-* tokens). Warm and on-brand, distinct enough to read when stacked.
+// Forest green -> gold -> terracotta ramp for stacked series. Referenced as CSS
+// custom properties so the palette follows the active theme (light or dark).
 export const CHART_COLORS = [
-  '#1f8a5b', '#4fd394', '#2c5242', '#d99a3c', '#c8541f',
-  '#2f5fd0', '#7aa86f', '#b5403a', '#3f8f6b', '#a98b4f',
+  'var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)',
+  'var(--chart-6)', 'var(--chart-7)', 'var(--chart-8)', 'var(--chart-9)', 'var(--chart-10)',
 ]
 
 const MODEL_LABELS: Record<string, string> = {

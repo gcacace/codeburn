@@ -227,6 +227,231 @@ describe('codex provider - session discovery', () => {
     expect(sessions).toHaveLength(1)
   })
 
+  it('accepts a third-party frontend originator (t3code_desktop)', async () => {
+    // Any client driving `codex app-server` writes structurally identical
+    // rollouts under ~/.codex/sessions with its own originator string.
+    // Discovery must be structural, not a per-client allowlist (issue #873).
+    await writeSession(tmpDir, '2026-04-14', 'rollout-t3code.jsonl', [
+      sessionMeta({ originator: 't3code_desktop', session_id: 'sess-t3code', cwd: '/Users/test/t3code' }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.path).toContain('rollout-t3code.jsonl')
+    expect(sessions[0]!.project).toBe('Users-test-t3code')
+  })
+
+  it('accepts the JetBrains plugin originator (issue #626)', async () => {
+    await writeSession(tmpDir, '2026-04-14', 'rollout-jetbrains.jsonl', [
+      sessionMeta({ originator: 'JetBrains.IntelliJ IDEA', session_id: 'sess-jb', cwd: '/Users/test/jb' }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.path).toContain('rollout-jetbrains.jsonl')
+    expect(sessions[0]!.project).toBe('Users-test-jb')
+  })
+
+  it('accepts a rollout with no originator field at all', async () => {
+    // Proves the gate is structural rather than string-matching: a rollout that
+    // omits `originator` entirely is still a valid Codex session.
+    const [year, month, day] = '2026-04-14'.split('-')
+    const sessionDir = join(tmpDir, 'sessions', year!, month!, day!)
+    await mkdir(sessionDir, { recursive: true })
+    await writeFile(
+      join(sessionDir, 'rollout-no-originator.jsonl'),
+      JSON.stringify({
+        type: 'session_meta',
+        timestamp: '2026-04-14T10:00:00Z',
+        payload: {
+          cwd: '/Users/test/anon',
+          session_id: 'sess-anon',
+          model: 'gpt-5.5',
+        },
+      }) + '\n' +
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }) + '\n',
+    )
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.project).toBe('Users-test-anon')
+  })
+
+  it('accepts an archived rollout from a third-party frontend', async () => {
+    await writeArchivedSession(tmpDir, 'rollout-archived-t3code.jsonl', [
+      sessionMeta({ originator: 't3code_desktop', session_id: 'sess-arch-t3', cwd: '/Users/test/arch' }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.project).toBe('Users-test-arch')
+  })
+
+  it('still rejects foreign and malformed first lines regardless of originator', async () => {
+    const [year, month, day] = '2026-04-14'.split('-')
+    const sessionDir = join(tmpDir, 'sessions', year!, month!, day!)
+    await mkdir(sessionDir, { recursive: true })
+    // Wrong entry type, even with a codex-looking originator.
+    await writeFile(
+      join(sessionDir, 'rollout-wrong-type.jsonl'),
+      JSON.stringify({ type: 'other', payload: { originator: 'codex-cli', cwd: '/x' } }) + '\n',
+    )
+    // session_meta with no payload at all.
+    await writeFile(
+      join(sessionDir, 'rollout-no-payload.jsonl'),
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-04-14T10:00:00Z' }) + '\n',
+    )
+    // session_meta with a non-object payload.
+    await writeFile(
+      join(sessionDir, 'rollout-scalar-payload.jsonl'),
+      JSON.stringify({ type: 'session_meta', payload: 'codex-cli' }) + '\n',
+    )
+    // session_meta with an array payload.
+    await writeFile(
+      join(sessionDir, 'rollout-array-payload.jsonl'),
+      JSON.stringify({ type: 'session_meta', payload: [] }) + '\n',
+    )
+    // Not JSON at all.
+    await writeFile(join(sessionDir, 'rollout-not-json.jsonl'), 'not json at all\n')
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toEqual([])
+  })
+
+  it('survives a non-string cwd instead of zeroing out the whole provider', async () => {
+    // Structural discovery admits rollouts from clients whose schema conformance
+    // is unverified, so a payload field can hold anything JSON can express.
+    // `cwd` is declared `string` but reaches sanitizeProject straight off
+    // JSON.parse: a number/object/array/bool used to throw
+    // "cwd.replace is not a function", escape discoverSessions, and get caught
+    // by safeDiscoverSessions — which returns [] for the ENTIRE codex provider,
+    // so one malformed file made every Codex report read zero.
+    const [year, month, day] = '2026-04-14'.split('-')
+    const sessionDir = join(tmpDir, 'sessions', year!, month!, day!)
+    await mkdir(sessionDir, { recursive: true })
+    const badCwds: Array<[string, unknown]> = [
+      ['number', 123],
+      ['object', { path: '/Users/test/obj' }],
+      ['array', ['/Users/test/arr']],
+      ['bool', true],
+      ['null', null],
+      ['empty', ''],
+    ]
+    for (const [label, cwd] of badCwds) {
+      await writeFile(
+        join(sessionDir, `rollout-badcwd-${label}.jsonl`),
+        JSON.stringify({
+          type: 'session_meta',
+          timestamp: '2026-04-14T10:00:00Z',
+          payload: { cwd, session_id: `sess-${label}`, originator: 'codex-cli' },
+        }) + '\n' +
+        tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }) + '\n',
+      )
+    }
+    // A healthy sibling: proves the provider is not zeroed out by the bad ones.
+    await writeSession(tmpDir, '2026-04-14', 'rollout-good.jsonl', [
+      sessionMeta({ cwd: '/Users/test/good', session_id: 'sess-good' }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+
+    expect(sessions).toHaveLength(badCwds.length + 1)
+    for (const s of sessions) expect(typeof s.project).toBe('string')
+    const byName = new Map(sessions.map(s => [s.path.split('/').pop()!, s.project]))
+    for (const [label] of badCwds) {
+      expect(byName.get(`rollout-badcwd-${label}.jsonl`)).toBe('unknown')
+    }
+    expect(byName.get('rollout-good.jsonl')).toBe('Users-test-good')
+  })
+
+  it('does not leak a non-string cwd into projectPath/workingDirectory', async () => {
+    // Same unchecked cast on the parse side: sessionCwd feeds projectPath and
+    // workingDirectory, which the parser's path helpers call string methods on.
+    const [year, month, day] = '2026-04-14'.split('-')
+    const sessionDir = join(tmpDir, 'sessions', year!, month!, day!)
+    await mkdir(sessionDir, { recursive: true })
+    await writeFile(
+      join(sessionDir, 'rollout-badcwd-parse.jsonl'),
+      JSON.stringify({
+        type: 'session_meta',
+        timestamp: '2026-04-14T10:00:00Z',
+        payload: { cwd: 123, session_id: 'sess-badcwd', model: 'gpt-5.5', originator: 'codex-cli' },
+      }) + '\n' +
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }) + '\n',
+    )
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+
+    const calls: ParsedProviderCall[] = []
+    for await (const call of provider.createSessionParser(sessions[0]!, new Set()).parse()) calls.push(call)
+
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call.projectPath === undefined || typeof call.projectPath === 'string').toBe(true)
+      expect(call.workingDirectory === undefined || typeof call.workingDirectory === 'string').toBe(true)
+    }
+  })
+
+  it('counts a forked rollout whose timestamp is unparseable instead of throwing it to zero', async () => {
+    // A forked session with a garbage (or non-string) timestamp used to make the
+    // fork-cutoff `new Date(NaN).toISOString()` throw RangeError, sinking the
+    // whole session's usage to zero. Same unchecked-JSON.parse class as cwd.
+    await writeSession(tmpDir, '2026-04-14', 'rollout-forked-badts.jsonl', [
+      JSON.stringify({
+        type: 'session_meta',
+        timestamp: 'not-a-real-timestamp',
+        payload: { cwd: '/Users/test/fork', session_id: 'sess-fork', model: 'gpt-5.5', originator: 't3code_desktop', forked_from_id: 'parent-1' },
+      }),
+      tokenCount({ timestamp: '2026-04-14T10:01:00Z', last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+
+    const calls: ParsedProviderCall[] = []
+    for await (const call of provider.createSessionParser(sessions[0]!, new Set()).parse()) calls.push(call)
+    expect(calls.length).toBeGreaterThan(0)
+  })
+
+  it('counts a rollout with a non-string model via the fallback instead of throwing', async () => {
+    // A non-string `model` used to ride sessionModel into calculateCost, which
+    // calls `.replace()` on it -> "model.replace is not a function" -> the whole
+    // session reads zero. It should fall back to a real model and be counted.
+    await writeSession(tmpDir, '2026-04-14', 'rollout-badmodel.jsonl', [
+      JSON.stringify({
+        type: 'session_meta',
+        timestamp: '2026-04-14T10:00:00Z',
+        payload: { cwd: '/Users/test/m', session_id: 'sess-badmodel', model: { name: 'gpt-5.5' }, originator: 't3code_desktop' },
+      }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+    expect(sessions).toHaveLength(1)
+
+    const calls: ParsedProviderCall[] = []
+    for await (const call of provider.createSessionParser(sessions[0]!, new Set()).parse()) calls.push(call)
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(typeof call.model).toBe('string')
+      expect(Number.isFinite(call.costUSD)).toBe(true)
+    }
+  })
+
   it('accepts session_meta lines larger than 16 KB (Codex CLI 0.128+)', async () => {
     // Codex CLI 0.128+ embeds the full base_instructions / system prompt in the
     // first session_meta line, often pushing it past 20 KB. Regression guard

@@ -26,7 +26,7 @@ function makeTooltip(labels: Record<string, string>, fmt: (n: number) => string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const total = items.reduce((s: number, p: any) => s + p.value, 0)
     return (
-      <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs shadow-xl ring-1 ring-black/5">
+      <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs shadow-xl ring-1 ring-border">
         <div className="mb-1.5 font-medium text-foreground">{formatPeriod(String(lbl))}</div>
         <div className="flex flex-col gap-1">
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
@@ -252,7 +252,7 @@ function StackedBars({
             tick={{ fontSize: 11, fill: 'var(--color-tertiary-foreground)' }}
             tickFormatter={axisFmt}
           />
-          <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} content={<Tip />} />
+          <Tooltip cursor={{ fill: 'var(--chart-hover-cursor)' }} content={<Tip />} />
           {series.map((s, i) => (
             <Bar
               key={s.key}

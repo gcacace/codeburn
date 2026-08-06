@@ -467,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         // is refreshed by refreshPayloadForPopoverOpen the moment it opens,
         // so a closed-popover tick never pays for it (#647).
         if !(popover?.isShown ?? false) {
-            async let menubar = store.refreshQuietly(
+            async let menubar = store.refreshMenubarBadge(
                 period: menubarPeriod,
                 force: force,
                 qualityOfService: qualityOfService
@@ -489,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
             qualityOfService: qualityOfService
         )
         async let menubar = needsMenubarPayload
-            ? store.refreshQuietly(period: menubarPeriod, force: force, qualityOfService: qualityOfService)
+            ? store.refreshMenubarBadge(period: menubarPeriod, force: force, qualityOfService: qualityOfService)
             : true
         async let today = needsTodayPayload
             ? store.refreshQuietly(period: .today, force: force, qualityOfService: qualityOfService)
@@ -870,6 +870,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
             _ = self.store.payload
             _ = self.store.menubarPeriod
             _ = self.store.menubarPayload
+            // Combined-scope badge total: re-render the badge when the cross-device
+            // aggregate for the menubar period lands (or a peer goes reachable).
+            _ = self.store.menubarBadgeCombined
             // Track currency so the menubar title catches up immediately on
             // currency switch instead of waiting for the next 30s payload tick.
             _ = self.store.currency
@@ -986,7 +989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         button.image = nil
         button.imagePosition = .noImage
 
-        let font = NSFont.monospacedDigitSystemFont(ofSize: menubarTitleFontSize, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: menubarTitleFontSize, weight: .regular)
         let baseConfig = NSImage.SymbolConfiguration(pointSize: menubarTitleFontSize, weight: .medium)
         // Tint the flame based on the worst-affected connected provider's quota.
         // Normal (<70%) keeps the template (auto white-on-dark / black-on-light);
@@ -1023,23 +1026,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
 
         if store.displayMetric != .iconOnly {
             let suffix = menubarPeriod.menubarSuffix(compact: compact)
+            // Under combined scope the badge shows the cross-device aggregate, so
+            // it matches the popover hero instead of trailing it with the local
+            // figure. Falls back to local when no combined payload is available
+            // (local scope, cold cache, or an unreachable peer). Credits have no
+            // combined total, so that metric always reflects the local device.
+            let badgeCombined = store.menubarBadgeCombined
+            let cost: Double? = badgeCombined?.cost ?? menubarPayload?.current.cost
+            let outputTokens: Int? = badgeCombined?.outputTokens ?? menubarPayload?.current.outputTokens
+            let inputTokens: Int? = badgeCombined?.inputTokens ?? menubarPayload?.current.inputTokens
             let valueText: String
-            if store.displayMetric == .tokens, let p = menubarPayload?.current {
-                let out = formatTokensMenubar(Double(p.outputTokens))
-                let inp = formatTokensMenubar(Double(p.inputTokens))
-                valueText = compact ? "↑\(out)↓\(inp)\(suffix)" : " ↑\(out) ↓\(inp)\(suffix)"
-            } else if store.displayMetric == .totalTokens, let p = menubarPayload?.current {
-                let total = formatTokensMenubar(Double(p.inputTokens + p.outputTokens))
+            if store.displayMetric == .tokens, let out = outputTokens, let inp = inputTokens {
+                let outText = formatTokensMenubar(Double(out))
+                let inpText = formatTokensMenubar(Double(inp))
+                valueText = compact ? "↑\(outText)↓\(inpText)\(suffix)" : " ↑\(outText) ↓\(inpText)\(suffix)"
+            } else if store.displayMetric == .totalTokens, let out = outputTokens, let inp = inputTokens {
+                let total = formatTokensMenubar(Double(inp + out))
                 valueText = compact ? "\(total)\(suffix)" : " \(total)\(suffix)"
             } else if store.displayMetric == .credits, let p = menubarPayload?.current {
                 let credits = formatTokensMenubar((p.codexCredits ?? 0).rounded())
                 valueText = compact ? "\(credits)cr\(suffix)" : " \(credits) credits\(suffix)"
             } else {
                 let fallback = compact ? "$-" : "$—"
-                let formatted = menubarPayload?.current.cost
                 valueText = compact
-                    ? (formatted?.asCompactCurrencyWhole() ?? fallback) + suffix
-                    : " " + (formatted?.asCompactCurrency() ?? fallback) + suffix
+                    ? (cost?.asCompactCurrencyWhole() ?? fallback) + suffix
+                    : " " + (cost?.asCompactCurrency() ?? fallback) + suffix
             }
 
             var textAttrs: [NSAttributedString.Key: Any] = [.font: font, .baselineOffset: -1.0]
@@ -1047,10 +1058,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
                 textAttrs[.foregroundColor] = NSColor.secondaryLabelColor
             }
             composed.append(NSAttributedString(string: valueText, attributes: textAttrs))
+
+            // Combined scope, but a paired device didn't report this cycle: append
+            // a dimmed "reachable/total" so the reduced total reads as "peer
+            // unreachable" rather than a glitch (mirrors the popover's device list).
+            if let shortfall = store.menubarBadgeDeviceShortfall {
+                let marker = " · \(shortfall.reachable)/\(shortfall.total)"
+                let markerAttrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .baselineOffset: -1.0,
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+                composed.append(NSAttributedString(string: marker, attributes: markerAttrs))
+            }
         }
 
         button.attributedTitle = composed
-        button.toolTip = "CodeBurn \(menubarPeriod.menubarMetricLabel)"
+        if let shortfall = store.menubarBadgeDeviceShortfall {
+            button.toolTip = "CodeBurn \(menubarPeriod.menubarMetricLabel) · \(shortfall.reachable) of \(shortfall.total) devices reporting"
+        } else {
+            button.toolTip = "CodeBurn \(menubarPeriod.menubarMetricLabel)"
+        }
 
         persistBadgeStatusFile()
     }

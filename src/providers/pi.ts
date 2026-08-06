@@ -2,7 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
 import { homedir } from 'os'
 
-import { readSessionFile } from '../fs-utils.js'
+import { readSessionFile, readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { normalizeContentBlocks } from '../content-utils.js'
@@ -90,16 +90,30 @@ function getOmpSessionsDir(override?: string): string {
   return override ?? join(homedir(), '.omp', 'agent', 'sessions')
 }
 
-async function readFirstEntry(filePath: string): Promise<PiEntry | null> {
-  const content = await readSessionFile(filePath)
-  if (content === null) return null
-  const line = content.split('\n')[0]
-  if (!line?.trim()) return null
-  try {
-    return JSON.parse(line) as PiEntry
-  } catch {
-    return null
+// OMP can write a fixed-width title metadata line (`type: "title"`) before the
+// `type: "session"` header (issue #845), and either provider may pad the
+// header with blank lines. Scan a bounded number of leading lines rather than
+// just the first one, and rather than the whole file (issue #846 read each
+// transcript in full to reach line 0), so discovery stays cheap even when a
+// file turns out to have no session record at all (a message-only file, or a
+// pathological run of blank/junk lines).
+const MAX_HEADER_LINES_SCANNED = 20
+
+async function readSessionEntry(filePath: string): Promise<PiEntry | null> {
+  let linesScanned = 0
+  for await (const line of readSessionLines(filePath)) {
+    if (linesScanned >= MAX_HEADER_LINES_SCANNED) break
+    linesScanned++
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const entry = JSON.parse(trimmed) as PiEntry
+      if (entry.type === 'session') return entry
+    } catch {
+      continue
+    }
   }
+  return null
 }
 
 async function discoverSessionsInDir(sessionsDir: string, providerName: string): Promise<SessionSource[]> {
@@ -130,10 +144,10 @@ async function discoverSessionsInDir(sessionsDir: string, providerName: string):
       const fileStat = await stat(filePath).catch(() => null)
       if (!fileStat?.isFile()) continue
 
-      const first = await readFirstEntry(filePath)
-      if (!first || first.type !== 'session') continue
+      const entry = await readSessionEntry(filePath)
+      if (!entry) continue
 
-      const cwd = first.cwd ?? dirName
+      const cwd = entry.cwd ?? dirName
       sources.push({ path: filePath, project: basename(cwd), provider: providerName })
     }
   }

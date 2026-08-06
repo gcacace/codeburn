@@ -271,6 +271,49 @@ final class AppStore {
         cache[menubarStatusKey]?.payload
     }
 
+    private var menubarCombinedKey: PayloadCacheKey {
+        PayloadCacheKey(scope: .combined, period: menubarPeriod, provider: .all, day: nil, claudeConfigSourceId: selectedClaudeConfigSourceId)
+    }
+
+    /// Cross-device totals for the menubar badge's period, used so the badge
+    /// figure matches the popover hero under combined scope. `nil` under local
+    /// scope, or when no combined payload for the badge period is cached yet
+    /// (cold start, or the peer is unreachable) — the badge then falls back to
+    /// the local figure, exactly like the popover.
+    var menubarBadgeCombined: CombinedUsageTotals? {
+        guard effectiveSelectedScope == .combined else { return nil }
+        return cache[menubarCombinedKey]?.payload.combined?.combined
+    }
+
+    /// `(reachable, total)` only when combined scope is active and fewer paired
+    /// devices reported than are paired — i.e. the badge total is degraded to
+    /// the reachable subset (a peer is asleep/off-network this cycle). The badge
+    /// shows this so a momentary drop to the local figure reads as "peer
+    /// unreachable", not a glitch. `nil` when every paired device reported (or
+    /// there is only one), and under local scope.
+    var menubarBadgeDeviceShortfall: (reachable: Int, total: Int)? {
+        guard let totals = menubarBadgeCombined, totals.reachableCount < totals.deviceCount else { return nil }
+        return (totals.reachableCount, totals.deviceCount)
+    }
+
+    /// Refresh the payloads the badge renders for `period`: always the local
+    /// figure, plus the combined cross-device total when combined scope is
+    /// active. Combined is best-effort — a slow or unreachable peer degrades to
+    /// the local figure — so the local fetch alone determines success.
+    @discardableResult
+    func refreshMenubarBadge(period: Period, force: Bool = false, qualityOfService: QualityOfService = .userInitiated) async -> Bool {
+        async let local = refreshQuietly(period: period, force: force, qualityOfService: qualityOfService)
+        guard effectiveSelectedScope == .combined else { return await local }
+        async let combined = refreshQuietly(
+            key: PayloadCacheKey(scope: .combined, period: period, provider: .all, day: nil, claudeConfigSourceId: selectedClaudeConfigSourceId),
+            includeOptimize: false,
+            force: force,
+            qualityOfService: qualityOfService
+        )
+        let (localSucceeded, _) = await (local, combined)
+        return localSucceeded
+    }
+
     /// All-provider payload for the selected period. Used by the tab strip to show
     /// per-provider costs that match the active period, not just today.
     var periodAllPayload: MenubarPayload? {
@@ -1378,18 +1421,37 @@ final class AppStore {
                     details.append(.init(label: "\(extra.name) · \(s.windowLabel)", percent: s.usedPercent / 100, resetsAt: s.resetsAt))
                 }
             }
+            // No rate windows here, so the allowance feeds the bar and badge.
+            if let credits = usage.creditLimit {
+                let row = QuotaSummary.Window(
+                    label: credits.shortLabel,
+                    percent: credits.usedPercent / 100,
+                    resetsAt: credits.resetsAt
+                )
+                if primary == nil { primary = row }
+                details.append(row)
+            }
         }
         let plan = codexUsage?.plan.displayName
         var footerLines: [String] = []
         if let balance = codexUsage?.creditsBalance, balance > 0 {
-            // Format as plain dollars; ChatGPT settles in USD regardless of
-            // the user's display-currency preference.
+            // Credit-settled accounts denominate in credits, so no symbol.
+            let inCredits = codexUsage?.hasCredits == true
             let formatter = NumberFormatter()
-            formatter.numberStyle = .currency
-            formatter.currencyCode = "USD"
-            formatter.maximumFractionDigits = 2
-            let formatted = formatter.string(from: NSNumber(value: balance)) ?? "$\(balance)"
+            formatter.numberStyle = inCredits ? .decimal : .currency
+            formatter.maximumFractionDigits = inCredits ? 0 : 2
+            // Half-up matches the desktop decoder's Math.round; the default is
+            // half-even, which disagrees on exact-half balances.
+            formatter.roundingMode = .halfUp
+            // `en_US`, not `en_US_POSIX`: the latter drops grouping entirely.
+            formatter.locale = Locale(identifier: "en_US")
+            if !inCredits { formatter.currencyCode = "USD" }
+            let fallback = inCredits ? "\(Int(balance.rounded()))" : "$\(balance)"
+            let formatted = formatter.string(from: NSNumber(value: balance)) ?? fallback
             footerLines.append("Credits remaining · \(formatted)")
+        }
+        if codexUsage?.creditLimit == nil, codexUsage?.creditsUnlimited == true {
+            footerLines.append("Credits · Unlimited")
         }
         return QuotaSummary(providerFilter: filter, connection: connection, primary: primary, details: details, planLabel: plan, footerLines: footerLines)
     }
